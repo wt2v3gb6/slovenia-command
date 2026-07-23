@@ -451,10 +451,13 @@ html, body {
   border: 6px solid transparent; border-top-color: #2a3a44; border-bottom: 0;
 }
 #mapPopup .mapPopupClose {
-  position: absolute; top: 2px; right: 5px; cursor: pointer;
-  color: #6f8791; font-size: 14px; line-height: 1; background: none; border: 0;
+  position: absolute; top: 0; right: 0; cursor: pointer;
+  color: #9fb5bd; font-size: 15px; line-height: 1; background: none; border: 0;
+  padding: 6px 9px; z-index: 2;
 }
-#mapPopup .mapPopupClose:hover { color: #cfe3e8; }
+#mapPopup .mapPopupClose:hover { color: #fff; }
+/* leave room for the close button so it never overlaps the enemy popup text */
+#mapPopup .enemyPop { padding-right: 14px; }
 .bldgPopup, .zonePopup { font-size: 11.5px; line-height: 1.5; min-width: 170px; }
 .bldgPopup b, .zonePopup b { color: #dfe9ec; }
 .bpEff, .zpDesc { font-size: 10.5px; color: #90a8b0; margin: 4px 0; }
@@ -664,7 +667,9 @@ html, body {
 
 /* War banner over the map */
 #warBanner {
-  position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+  /* Sits BELOW the top dock (clock) and the modifier chip row so it is never
+     covered by the upper dock. topbar ends ~54px, modifierBar ~74-96px. */
+  position: absolute; top: 108px; left: 50%; transform: translateX(-50%);
   z-index: 780; background: #1a0f10ee; border: 1px solid #e06c60; border-radius: 4px;
   color: #e8b0aa; padding: 7px 16px; font-size: 11px; letter-spacing: 0.8px;
   text-align: center; line-height: 1.7; pointer-events: none;
@@ -1385,3 +1390,59 @@ html, body {
 @media (max-width: 560px) {
   #menuTitle { font-size: 38px; letter-spacing: 3px; }
 }
+
+/* ---- Combat & supply UI (veterancy stars, replenish button, battle modal) ---- */
+.uBtn {
+  display: inline-block; margin: 6px 0 2px; padding: 6px 12px; cursor: pointer;
+  background: #1c2a33; border: 1px solid #2f4a56; color: #cfe3e8;
+  border-radius: 6px; font-size: 11px; letter-spacing: .4px;
+}
+.uBtn:hover { background: #243742; }
+.uBtnWar { background: #3a1c1c; border-color: #6e3a38; color: #ffcfc8; }
+.uBtnWar:hover { background: #4a2422; }
+.uVet { font-size: 11.5px; color: #cfe3e8; }
+.uStars { color: #ffd35c; letter-spacing: 1px; }
+
+/* Enemy inspection popup (inside #mapPopup) */
+.enemyPop { min-width: 170px; }
+.epTitle { font-size: 12.5px; font-weight: 600; color: #ffcfc8; margin-bottom: 2px; }
+.epSub { font-size: 10.5px; color: #9fb5bd; margin-bottom: 6px; }
+.epRow { font-size: 11px; color: #cfe3e8; line-height: 1.7; }
+
+/* Centered battle-status modal */
+#battleModal {
+  position: fixed; inset: 0; z-index: 900; display: flex;
+  align-items: center; justify-content: center;
+  background: rgba(6, 10, 14, 0.62); backdrop-filter: blur(3px);
+}
+#battleModal.hidden { display: none; }
+.bmBox {
+  width: min(760px, 94vw); max-height: 88vh; overflow: auto;
+  background: rgba(20, 26, 32, 0.97); border: 1px solid #3a4a54;
+  border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+}
+.bmHead {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 16px; border-bottom: 1px solid #2a3a44;
+  font-size: 13px; letter-spacing: 1.5px; color: #ffcfc8; font-weight: 600;
+}
+.bmClose { background: none; border: none; color: #9fb5bd; font-size: 16px; cursor: pointer; }
+.bmClose:hover { color: #fff; }
+.bmCols { display: flex; align-items: stretch; gap: 8px; padding: 14px; }
+.bmCol { flex: 1; min-width: 0; }
+.bmVs { align-self: center; color: #e06c60; font-weight: 700; font-size: 15px; padding: 0 4px; }
+.bmColHead { font-size: 11px; letter-spacing: 1px; margin-bottom: 8px; padding-bottom: 5px; border-bottom: 1px solid #2a3a44; }
+.bmColHead.friendly { color: #7fe0c9; }
+.bmColHead.enemy { color: #e08f7f; }
+.bmUnit { display: flex; gap: 9px; padding: 7px; margin-bottom: 7px; background: rgba(255,255,255,0.03); border: 1px solid #24313b; border-radius: 8px; }
+.bmImg { width: 54px; height: 54px; flex-shrink: 0; border-radius: 6px; background: #0e141b center/cover no-repeat; border: 1px solid #2a3a44; }
+.bmInfo { flex: 1; min-width: 0; }
+.bmName { font-size: 12px; color: #eaf2f4; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bmMeta { font-size: 10px; color: #9fb5bd; margin-bottom: 4px; }
+.bmBar { display: flex; align-items: center; gap: 5px; font-size: 9.5px; color: #9fb5bd; margin: 2px 0; }
+.bmBar i { width: 22px; font-style: normal; }
+.bmTrack { flex: 1; height: 6px; background: #0e141b; border-radius: 3px; overflow: hidden; }
+.bmTrack span { display: block; height: 100%; }
+.bmStars { font-size: 10.5px; margin-top: 3px; color: #9fb5bd; }
+.bmEmpty { font-size: 11px; color: #7a8b93; padding: 8px 4px; }
+.bmFoot { padding: 11px 16px; border-top: 1px solid #2a3a44; font-size: 11px; color: #cfe3e8; text-align: center; }

@@ -32,6 +32,10 @@
         <span class="mbTitle">Play Multiplayer</span>
         <span class="mbSub">Co-op — two players, one Slovenia (shared screen)</span>
       </button>
+      <button class="menuBtn menuBtnAlt" id="btnLoad" disabled>
+        <span class="mbTitle">Load Game</span>
+        <span class="mbSub">Continue from a saved file</span>
+      </button>
       <button class="menuBtn menuBtnAlt" id="btnSettings">
         <span class="mbTitle">Settings</span>
         <span class="mbSub">Fullscreen, sound &amp; more</span>
@@ -144,11 +148,17 @@
       <div id="pmMpCodeSub" class="pmMpSub"></div>
     </div>
     <button class="pmBtn" id="pmResume">Resume</button>
+    <button class="pmBtn" id="pmSave">Save Game</button>
+    <button class="pmBtn" id="pmLoad">Load Game</button>
     <button class="pmBtn" id="pmSettings">Settings</button>
     <button class="pmBtn" id="pmMenu">Return to Main Menu</button>
     <button class="pmBtn pmQuit" id="pmQuit">Quit Game</button>
   </div>
 </div>
+
+<!-- Hidden file input used by both the main-menu and pause-menu "Load Game". -->
+<input type="file" id="loadFileInput" accept=".json,application/json" style="display:none">
+<a id="saveDownloadAnchor" style="display:none"></a>
 
 <div id="app">
 

@@ -78,6 +78,7 @@ function initDiplomacyState() {
     wars: [],        // { nation, aggressor:'them'|'player', startDate, wavesPlanned, wavesLaunched, nextWaveInDays, strengthCommitted, strengthDestroyed, occupied:[cityId], ljFallDays }
     enemyUnits: [],  // { id, nation, strength, initialStrength, lat, lon, path, targetCityId, engaged }
     enemySeq: 1,
+    capturedMunicipalities: {}, // municipalityId -> occupying nation id (their people/output/industry now serve the enemy)
   };
 }
 initDiplomacyState();
@@ -244,12 +245,22 @@ function spawnInvasionWave(war) {
   const groups = Math.min(2 + Math.floor(Math.random() * 2), def.entryPoints.length);
   const per = Math.round(waveStrength / groups);
 
+  // Give each battlegroup a recognisable composition so the player can see what
+  // TYPE of troops they're facing (with recon or in battle you also see detail).
+  const ENEMY_KINDS = [
+    { kind: "mech",  label: "Mechanized Battlegroup", image: commonsImage("BMP-2_(Croatia).jpg") },
+    { kind: "armor", label: "Armored Battlegroup",    image: commonsImage("M-84_tank.jpg") },
+    { kind: "inf",   label: "Infantry Battalion",     image: commonsImage("Soldiers_marching.jpg") },
+    { kind: "arty",  label: "Artillery Group",        image: commonsImage("Howitzer_firing.jpg") },
+  ];
   for (let g = 0; g < groups; g++) {
     const entry = def.entryPoints[Math.floor(Math.random() * def.entryPoints.length)];
+    const kind = ENEMY_KINDS[Math.floor(Math.random() * ENEMY_KINDS.length)];
     const unit = {
       id: state.diplomacy.enemySeq++,
       nation: war.nation,
       strength: per, initialStrength: per,
+      kind: kind.kind, kindLabel: kind.label, image: kind.image, exp: 0,
       lat: entry.lat + (Math.random() - 0.5) * 0.02,
       lon: entry.lon + (Math.random() - 0.5) * 0.02,
       path: [], targetCityId: null, engaged: false,
@@ -283,9 +294,16 @@ function playerUnitPower(u) {
   const def = UNIT_TYPES[u.type];
   // Ground firepower scales with each unit's attack stat (aircraft, artillery
   // and attack drones hit hard; fighters/recon contribute little to ground),
-  // multiplied by weapons research + event modifiers.
-  return (def.attack || 10) * unitCombatMult(u.type, "attack") * POWER_SCALE * (u.condition / 100) * (unitSupply(u) / 100);
+  // multiplied by weapons research + event modifiers, VETERANCY (stars), unit
+  // condition and its low-supply penalty.
+  const expMult = typeof unitExpMult === "function" ? unitExpMult(u) : 1;
+  const supMult = typeof supplyEffMult === "function" ? supplyEffMult(u) : (unitSupply(u) / 100);
+  return (def.attack || 10) * unitCombatMult(u.type, "attack") * POWER_SCALE * (u.condition / 100) * supMult * expMult;
 }
+
+// Experience gained per hour of contact, and the bonus for finishing a foe off.
+const EXP_PER_HOUR = 1.4;
+const EXP_KILL_BONUS = 18;
 
 function tickEnemyUnits(simHours) {
   // Units in contact burn supply fast; units.js reads this set each tick, so it
@@ -306,9 +324,14 @@ function tickEnemyUnits(simHours) {
       return dist <= (UNIT_TYPES[u.type].range || ENGAGE_RANGE_KM);
     });
     e.engaged = engaged.length > 0;
+    e.engagedUnitIds = engaged.map(u => u.id); // read by the battle-status modal
     engaged.forEach(u => state.engagedUnitIds.add(u.id));
 
     if (e.engaged) {
+      // Both sides gain veterancy while in contact.
+      engaged.forEach(u => { u.exp = (u.exp || 0) + EXP_PER_HOUR * simHours; u.battles = u.battles || 1; });
+      e.exp = (e.exp || 0) + EXP_PER_HOUR * simHours;
+
       let power = engaged.reduce((s, u) => s + playerUnitPower(u), 0) * support;
       if (lowAmmo) power *= 0.45; // out of ammunition — fighting at a fraction of effectiveness
       const losses = power * 0.02 * simHours;
@@ -352,7 +375,18 @@ function tickEnemyUnits(simHours) {
   const destroyed = d.enemyUnits.filter(e => e.strength <= 0);
   if (destroyed.length) {
     d.enemyUnits = d.enemyUnits.filter(e => e.strength > 0);
-    destroyed.forEach(e => logEvent(`<b style="color:#7fc97f">Enemy battlegroup destroyed</b> near ${nearestCityName(e.lat, e.lon)} (${NEIGHBOR_NATIONS[e.nation].flag} ${fmtNum(e.initialStrength)} troops neutralized).`));
+    destroyed.forEach(e => {
+      logEvent(`<b style="color:#7fc97f">Enemy battlegroup destroyed</b> near ${nearestCityName(e.lat, e.lon)} (${NEIGHBOR_NATIONS[e.nation].flag} ${fmtNum(e.initialStrength)} troops neutralized).`);
+      // Winning a battle: the victors gain a kill-bonus of experience, loot
+      // supply off the dead, and the win lifts national stability.
+      const winners = state.units.filter(u => (e.engagedUnitIds || []).includes(u.id));
+      winners.forEach(u => {
+        u.exp = (u.exp || 0) + EXP_KILL_BONUS;
+        u.wins = (u.wins || 0) + 1;
+        u.supply = Math.min(100, unitSupply(u) + 12); u.hp = u.supply; // battlefield loot
+      });
+      if (winners.length) state.econ.stability = clamp(state.econ.stability + 1.5, 0, 100);
+    });
   }
   const lost = state.units.filter(u => unitSupply(u) <= 0);
   if (lost.length) {
@@ -376,6 +410,95 @@ function tickEnemyUnits(simHours) {
       return true;
     });
   }
+}
+
+// ---- Municipality control ---------------------------------------------------
+// A municipality falls when an enemy formation stands inside it and no friendly
+// unit is there to hold it; it is liberated the moment a friendly unit is inside
+// with no enemy of the occupying nation present. While held, its population,
+// income and industry are counted as lost to the occupier — modelled as the
+// "Occupied Territory" national modifier scaled by the captured population share.
+function pointInMunicipality(lat, lon, m) {
+  return m && m.rings && m.rings.some(r => pointInRing([lat, lon], r));
+}
+function municipalityById(id) {
+  if (typeof municipalityPolygons !== "undefined" && municipalityPolygons[id]) return municipalityPolygons[id];
+  return (typeof MUNICIPALITIES !== "undefined" ? MUNICIPALITIES : []).find(m => String(m.id) === String(id)) || null;
+}
+
+function updateMunicipalityControl() {
+  const d = state.diplomacy;
+  if (!d.capturedMunicipalities) d.capturedMunicipalities = {};
+  const cap = d.capturedMunicipalities;
+  const readyFriendly = state.units.filter(u => (u.trainingDaysLeft || 0) <= 0);
+
+  // Capture: an enemy formation inside an unheld municipality with no friendly
+  // unit inside takes it.
+  for (const e of d.enemyUnits) {
+    const m = municipalityAt(e.lat, e.lon);
+    if (!m) continue;
+    if (cap[m.id]) continue;
+    const held = readyFriendly.some(u => pointInMunicipality(u.lat, u.lon, m));
+    if (!held) {
+      cap[m.id] = e.nation;
+      const nm = (NEIGHBOR_NATIONS[e.nation] || {}).name || "enemy";
+      logEvent(`<b style="color:#e06c60">${m.name} municipality captured</b> by ${nm} — its people, income and factories now serve the occupier until it is retaken.`);
+      state.econ.stability = clamp(state.econ.stability - 1.5, 0, 100);
+    }
+  }
+
+  // Liberation: friendly unit inside, no enemy of the occupying nation present.
+  for (const id in cap) {
+    const m = municipalityById(id);
+    if (!m) { delete cap[id]; continue; }
+    const nation = cap[id];
+    const friendlyInside = readyFriendly.some(u => pointInMunicipality(u.lat, u.lon, m));
+    const enemyInside = d.enemyUnits.some(e => e.nation === nation && pointInMunicipality(e.lat, e.lon, m));
+    if (friendlyInside && !enemyInside) {
+      delete cap[id];
+      logEvent(`<b style="color:#7fc97f">${m.name} municipality liberated</b> — its population and output return to Slovenia.`);
+    }
+  }
+
+  updateOccupationModifier();
+}
+
+// Sum the population of every currently-captured municipality and express it as
+// a national modifier: the enemy is taking that share of tax income and factory
+// output, and it dents stability and growth while the territory is held.
+function updateOccupationModifier() {
+  const cap = (state.diplomacy && state.diplomacy.capturedMunicipalities) || {};
+  let capPop = 0, n = 0;
+  for (const id in cap) {
+    const m = municipalityById(id);
+    if (m && typeof municipalityPopEstimate === "function") { capPop += municipalityPopEstimate(m); n++; }
+  }
+  const key = "occupied_territory";
+  if (n === 0) { if (typeof removeModifier === "function") removeModifier(key, true); return; }
+  const frac = clamp(capPop / (state.econ.population || 1), 0, 0.95);
+  const fx = {
+    taxIncomeMult: -frac,
+    factoryOutputMult: -frac,
+    growthBonus: -frac * 0.03,
+    stabilityBonus: -frac * 0.05,
+  };
+  let mod = state.modifiers.find(m => m.key === key);
+  if (mod) { mod.fx = fx; mod.label = `Occupied Territory (${n})`; }
+  else {
+    state.modifiers.push({
+      key, label: `Occupied Territory (${n})`,
+      icon: (typeof svgIcon === "function" ? svgIcon("gauge") : ""),
+      fx, permanent: true, daysLeft: null,
+    });
+  }
+}
+
+// Release every municipality a nation held (called when its war ends).
+function releaseCapturedBy(nation) {
+  const cap = state.diplomacy && state.diplomacy.capturedMunicipalities;
+  if (!cap) return;
+  for (const id in cap) if (cap[id] === nation) delete cap[id];
+  updateOccupationModifier();
 }
 
 function nearestCityName(lat, lon) {
@@ -404,6 +527,10 @@ function tryOccupyCity(e) {
 // ---- Daily diplomacy tick (called from runDailyUpdate) ----
 function tickDiplomacy() {
   const d = state.diplomacy;
+
+  // Territory control: who holds which municipalities, and the economic cost of
+  // any the enemy is occupying.
+  updateMunicipalityControl();
 
   for (const id in NEIGHBOR_NATIONS) {
     const n = natState(id);
@@ -466,6 +593,7 @@ function endWar(war, outcome) {
   const n = natState(war.nation);
   d.wars = d.wars.filter(w => w !== war);
   d.enemyUnits = d.enemyUnits.filter(e => e.nation !== war.nation);
+  releaseCapturedBy(war.nation); // occupied territory is returned when the war ends
   n.atWar = false;
   n.tension = 30;
 

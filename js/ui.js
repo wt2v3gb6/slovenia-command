@@ -209,9 +209,14 @@ function unitStatBadges(def) {
 function pickerCardsHTML(entries, selectedKey, showStats) {
   return `<div class="pickerGrid">${entries.map(([key, def]) => {
     const bg = def.sector ? ((SECTOR_STYLE[def.sector] || {}).color || "#2a3a44") : "#2a3a44";
+    // Prefer local artwork (images/ folder) for this building/unit; fall back to
+    // the Wikimedia reference photo, then to the icon glyph.
+    const localUrl = localArtUrl(LOCAL_BUILDING_ART, key) || localArtUrl(LOCAL_UNIT_ART, key);
+    const src = localUrl || def.image;
+    const fb = (localUrl && def.image) ? def.image : "";
     return `
     <div class="pickCard ${key === selectedKey ? "pickCard-selected" : ""}" data-key="${key}">
-      <div class="pickImgWrap" style="background:${bg}33"><span class="pickFallback">${pickCardFallbackIcon(def)}</span><img src="${def.image}" alt="${def.label}" onerror="this.style.display='none'" /></div>
+      <div class="pickImgWrap" style="background:${bg}33"><span class="pickFallback">${pickCardFallbackIcon(def)}</span><img src="${src}" alt="${def.label}" data-fb="${fb}" onerror="if(this.dataset.fb){this.src=this.dataset.fb;this.dataset.fb='';}else{this.style.display='none';}" /></div>
       <div class="pickCardName">${def.label}${showStats ? unitStatBadges(def) : ""}</div>
     </div>`; }).join("")}</div>`;
 }
@@ -225,7 +230,8 @@ function buildCityBuildForm() {
   // Economy sector = draw-a-zone system (+ Port as a normal placed building).
   if (cpSelectedBuildSector === "economy") {
     if (typeof cancelPlacementMode === "function") cancelPlacementMode();
-    const zoneCard = (k) => `<div class="pickCard zoneCard" data-zone="${k}"><div class="pickImgWrap" style="background:${ZONE_TYPES[k].color}33"><span class="pickFallback">${ZONE_TYPES[k].icon}</span></div><div class="pickCardName">${ZONE_TYPES[k].label}<div class="pickStats">draw ≥3 points</div></div></div>`;
+    const zoneImg = (k) => { const u = localArtUrl(LOCAL_ZONE_ART, k); return u ? `<img src="${u}" alt="${ZONE_TYPES[k].label}" onerror="this.style.display='none'">` : ""; };
+    const zoneCard = (k) => `<div class="pickCard zoneCard" data-zone="${k}"><div class="pickImgWrap" style="background:${ZONE_TYPES[k].color}33"><span class="pickFallback">${ZONE_TYPES[k].icon}</span>${zoneImg(k)}</div><div class="pickCardName">${ZONE_TYPES[k].label}<div class="pickStats">draw ≥3 points</div></div></div>`;
     area.innerHTML = `
       <div class="panelhead" style="margin-top:10px;">BUILD HERE</div>
       ${sectorTabs}
@@ -246,7 +252,8 @@ function buildCityBuildForm() {
     const placedEntries = Object.entries(BUILDING_TYPES).filter(([, def]) => def.sector === "energy" && !def.drawMode);
     if (!cpSelectedBuildType || !placedEntries.some(([k]) => k === cpSelectedBuildType)) cpSelectedBuildType = placedEntries[0][0];
     const st = ZONE_TYPES.solar, damDef = BUILDING_TYPES.power_hydro;
-    const solarCard = `<div class="pickCard zoneCard" data-solarzone="1"><div class="pickImgWrap" style="background:${st.color}33"><span class="pickFallback">${st.icon}</span></div><div class="pickCardName">${st.label}<div class="pickStats">draw ≥3 points</div></div></div>`;
+    const solarUrl = localArtUrl(LOCAL_ZONE_ART, "solar");
+    const solarCard = `<div class="pickCard zoneCard" data-solarzone="1"><div class="pickImgWrap" style="background:${st.color}33"><span class="pickFallback">${st.icon}</span>${solarUrl ? `<img src="${solarUrl}" alt="${st.label}" onerror="this.style.display='none'">` : ""}</div><div class="pickCardName">${st.label}<div class="pickStats">draw ≥3 points</div></div></div>`;
     const damCard = `<div class="pickCard zoneCard" data-dam="1"><div class="pickImgWrap" style="background:#4a4f5533"><span class="pickFallback">${svgIcon('energy')}</span></div><div class="pickCardName">${damDef.label}<div class="pickStats">click A → B</div></div></div>`;
     area.innerHTML = `
       <div class="panelhead" style="margin-top:10px;">BUILD HERE</div>

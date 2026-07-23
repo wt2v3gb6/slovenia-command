@@ -85,13 +85,17 @@ const UNIT_TYPES = {
   ifv:   { label: "Patria AMV (IFV Coy)",    domain: "ground", speed: 46, manpower: 90,  cost: 3.5e6, attack: 45, defense: 40, airAttack: 5,  range: 4,  image: commonsImage("Slovenia_Patria_AMV_Svarun-CV.jpg") },
   mbt:   { label: "M-84 Tank Platoon",       domain: "ground", speed: 38, manpower: 30,  cost: 2.2e6, attack: 70, defense: 60, airAttack: 0,  range: 4,  image: commonsImage("M-84_Tank-Slovenia.jpg") },
   arty:  { label: "155mm Artillery Battery", domain: "ground", speed: 30, manpower: 60,  cost: 2.8e6, attack: 90, defense: 15, airAttack: 0,  range: 15, image: commonsImage("TN90-Slovenia.jpg") },
-  recon: { label: "Reconnaissance Platoon",  domain: "ground", speed: 58, manpower: 25,  cost: 0.6e6, attack: 15, defense: 15, airAttack: 0,  range: 4,  image: commonsImage("Valuk_2.jpg") },
+  // Recon keeps STANDARD INFANTRY attack/defence but has the game's highest
+  // scout radius (see scoutRadiusKm) — its job is to see, not to fight.
+  recon: { label: "Reconnaissance Platoon",  domain: "ground", speed: 58, manpower: 25,  cost: 0.6e6, attack: 20, defense: 30, airAttack: 0,  range: 4,  image: commonsImage("Valuk_2.jpg") },
   aa:    { label: "Air Defense (SAM) Battery", domain: "ground", speed: 40, manpower: 40, cost: 2.0e6, attack: 20, defense: 30, airAttack: 90, range: 25, requiresAirbase: true, image: commonsImage("Roland_missile_system.jpg") },
+  // Mobile logistics: parks near friendly units and replenishes their supply &
+  // condition like a mobile base (see groundSupplySourceKm / replenishRateAt).
+  supply: { label: "Supply Company", domain: "ground", speed: 42, manpower: 40, cost: 1.2e6, attack: 5, defense: 20, airAttack: 0, range: 2, isSupply: true, supplyRangeKm: 6, replenish: 70, image: commonsImage("Military_logistics_truck.jpg") },
 
   fighter:      { label: "Fighter Squadron",        domain: "air", speed: 900, manpower: 20, cost: 14e6, attack: 25,  defense: 40, airAttack: 95, range: 40, fuelKm: 1400, image: commonsImage("F-16_Fighting_Falcon.jpg") },
   attack_air:   { label: "Attack Aircraft (CAS)",   domain: "air", speed: 720, manpower: 16, cost: 10e6, attack: 90,  defense: 30, airAttack: 20, range: 35, fuelKm: 1000, image: commonsImage("A-10_Thunderbolt_II.jpg") },
   bomber:       { label: "Bomber Squadron",         domain: "air", speed: 780, manpower: 24, cost: 16e6, attack: 130, defense: 20, airAttack: 10, range: 45, fuelKm: 1800, image: commonsImage("Bomber_aircraft.jpg") },
-  recon_drone:  { label: "Reconnaissance Drone",    domain: "air", speed: 200, manpower: 4,  cost: 2.0e6, attack: 5,   defense: 10, airAttack: 0,  range: 30, fuelKm: 2400, image: commonsImage("MQ-9_Reaper.jpg") },
   attack_drone: { label: "Attack Drone",            domain: "air", speed: 240, manpower: 5,  cost: 4.5e6, attack: 65,  defense: 12, airAttack: 15, range: 30, fuelKm: 1800, image: commonsImage("Bayraktar_TB2.jpg") },
 };
 
@@ -494,3 +498,105 @@ const ELECTRICITY_OUTPUT = {
 const BASE_ELECTRICITY_MWH = 85000;
 const ELEC_IMPORT_PRICE = 85;  // €/MWh bought when short
 const ELEC_EXPORT_PRICE = 55;  // €/MWh sold when in surplus
+
+// ----------------------------------------------------------------------------
+// LOCAL ARTWORK (images/ folder)
+// ----------------------------------------------------------------------------
+// The player drops PNGs into slovenia-command/images/ and they are used for the
+// build/deploy cards, the placement ghost, and the finished building/zone art.
+// Keyed by building type, zone kind, or unit type. Filenames use plain
+// UPPERCASE names (with spaces/&) exactly as listed here — add a matching file
+// and it appears automatically; missing files fall back to the hatched
+// placeholder or the Wikimedia photo. Zone art is used as a SEAMLESS repeating
+// tile that fills the zone polygon, so those PNGs should tile edge-to-edge.
+const LOCAL_BUILDING_ART = {
+  hospital:         "HOSPITAL.png",
+  school:           "PRIMARY SECONDARY SCHOOL.png",
+  university:       "UNIVERSITY.png",
+  police_station:   "POLICE STATION.png",
+  fire_station:     "FIRE STATION.png",
+  sports_center:    "SPORTS & CULTURE CENTER.png",
+  military_base:    "MILITARY BASE.png",
+  fob:              "FOB.png",
+  military_airbase: "AIR BASE.png",
+  radar_station:    "AIR DEFENSE RADAR.png",
+  power_nuclear:    "NUCLEAR POWER PLANT.png",
+  geothermal:       "GEOTHERMAL PLANT.png",
+  power_wind:       "WIND TURBINE PLANT.png",
+  oil_rig:          "OFFSHORE OIL RIG.png",
+  mine_coal:        "COAL MINE.png",
+  mine_leadzinc:    "LEAD & ZINC MINE.png",
+  mine_mercury:     "MERCURY MINE.png",
+  mine_gas:         "GAS & OIL FIELD.png",
+  mine_salt:        "SALT WORKS.png",
+  mine_stone:       "STONE QUARRY.png",
+  // Hydro dam is drawn as a LINE across a river, not a footprint, so it has no
+  // building image (see the dam branch in map.js).
+};
+const LOCAL_ZONE_ART = {
+  industrial:  "INDUSTRIAL ZONE.png",
+  residential: "RESIDENTAL ZONE.png",
+  solar:       "SOLAR PANEL PLANT.png",
+  economic:    "ECONOMIC ZONE.png",
+  port:        "PORT ZONE.png",
+};
+// Units use their built-in reference photos (commonsImage) — no local art files.
+// Add an entry here only if you drop a matching PNG into images/ for a unit.
+const LOCAL_UNIT_ART = {};
+
+// Image cache. loadArt() kicks off the load once, returns the <img> only when it
+// is decoded and safe to draw, and schedules a repaint on arrival so the art
+// pops in without a game tick. Failed/missing files resolve to null forever.
+const _artImgCache = Object.create(null);
+function loadArt(filename) {
+  if (!filename) return null;
+  let e = _artImgCache[filename];
+  if (e) return e.ready ? e.img : null;
+  e = { img: new Image(), ready: false, failed: false };
+  e.img.onload = () => {
+    e.ready = true;
+    if (typeof mapEngine !== "undefined" && mapEngine) mapEngine._scheduleRender();
+  };
+  e.img.onerror = () => { e.failed = true; };
+  // encode spaces / & etc.; the dev + electron servers both decodeURIComponent.
+  e.img.src = "images/" + encodeURIComponent(filename);
+  _artImgCache[filename] = e;
+  return null;
+}
+function buildingArt(type) { return loadArt(LOCAL_BUILDING_ART[type]); }
+function zoneArt(kind)     { return loadArt(LOCAL_ZONE_ART[kind]); }
+function unitArt(type)     { return loadArt(LOCAL_UNIT_ART[type]); }
+// URL (or null) for a type's local art — used by HTML <img> cards which can do
+// their own onerror fallback. Does not touch the decode cache.
+function localArtUrl(map, key) {
+  const f = map[key];
+  return f ? "images/" + encodeURIComponent(f) : null;
+}
+
+// Canvas pattern cache for seamless zone fills. Built once per (kind,image).
+const _zonePatternCache = Object.create(null);
+function zonePattern(ctx, kind) {
+  const img = zoneArt(kind);
+  if (!img) return null;
+  let pat = _zonePatternCache[kind];
+  if (!pat) { pat = ctx.createPattern(img, "repeat"); _zonePatternCache[kind] = pat; }
+  return pat;
+}
+
+// ----------------------------------------------------------------------------
+// UNIT EXPERIENCE (veterancy)
+// ----------------------------------------------------------------------------
+// A unit earns experience by fighting; more battles → more experience → more
+// stars (1..5) → a combat-stat multiplier. Winning battles also lifts national
+// stability and loots supply off the dead (see diplomacy.js combat).
+const EXP_STAR_THRESHOLDS = [0, 25, 70, 150, 300]; // exp needed for stars 1..5
+function unitStars(u) {
+  const exp = (u && u.exp) || 0;
+  let s = 1;
+  for (let i = 1; i < EXP_STAR_THRESHOLDS.length; i++) if (exp >= EXP_STAR_THRESHOLDS[i]) s = i + 1;
+  return s; // 1..5
+}
+// +6% combat power per star above the first, so a 5-star veteran hits ~24% harder.
+function unitExpMult(u) { return 1 + (unitStars(u) - 1) * 0.06; }
+// Render stars as filled/empty pips (used in the unit panel & battle modal).
+function starString(n) { return "★★★★★".slice(0, n) + "☆☆☆☆☆".slice(0, 5 - n); }

@@ -87,6 +87,7 @@ const MP_ACTIONS = {
     if (u && typeof applyMoveOrder === "function") { u.freePath = !!p.freePath; applyMoveOrder(u, p.waypoints || []); }
   },
   haltAll: () => { if (typeof haltAllUnits === "function") haltAllUnits(); },
+  ping: (p) => { if (p && p.lat != null) { if (!state.pings) state.pings = []; state.pings.push({ id: p.id, lat: p.lat, lon: p.lon }); } },
   setPaused: (p) => { state.paused = !!p.paused; if (typeof refreshSpeedButtons === "function") refreshSpeedButtons(); },
   setSpeed: (p) => { state.speedIndex = p.index; state.paused = false; if (typeof refreshSpeedButtons === "function") refreshSpeedButtons(); },
   enactLaw: (p) => { if (typeof enactLaw === "function") enactLaw(p.groupKey, p.optionKey); },
