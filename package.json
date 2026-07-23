@@ -1,0 +1,52 @@
+{
+  "name": "slovenia-command",
+  "version": "1.0.0",
+  "productName": "Slovenia Command",
+  "description": "Slovenia Command — a strategy game set in Slovenia",
+  "author": "Slovenia Command",
+  "main": "electron-main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --publish never",
+    "publish": "electron-builder --win --publish always"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.sloveniacommand.game",
+    "productName": "Slovenia Command",
+    "artifactName": "SloveniaCommand-Setup-${version}.${ext}",
+    "files": [
+      "**/*",
+      "!dist${/*}",
+      "!.tilecache${/*}",
+      "!**/*.log",
+      "!app.exe.cmd",
+      "!_c.js"
+    ],
+    "win": {
+      "target": "nsis",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Slovenia Command",
+      "runAfterFinish": true
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "wt2v3gb6",
+        "repo": "slovenia-command"
+      }
+    ]
+  }
+}

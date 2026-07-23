@@ -1,0 +1,1387 @@
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0; width: 100%; height: 100%;
+  background: #0b1016; color: #cfe3e8;
+  font-family: "Segoe UI", "Consolas", monospace;
+  overflow: hidden;
+}
+
+#app {
+  /* The satellite map fills the whole screen; the top bar and bottom dock
+     FLOAT over it (see their position:absolute below) with a gap on every
+     side, so no dock touches a screen edge. */
+  display: grid;
+  grid-template-rows: 1fr;
+  grid-template-areas: "map";
+  width: 100vw; height: 100vh;
+  position: relative;
+  /* The drawer slides off-canvas via translateX(100%) when hidden; without
+     this, that off-screen box still counts toward the page's scrollable
+     area (body's overflow:hidden doesn't stop it), so an incidental
+     scroll-into-view drags the whole layout sideways underneath itself. */
+  overflow: hidden;
+}
+
+/* TOP BAR — floats over the full-screen map, gap on every side */
+#topbar {
+  position: absolute; top: 10px; left: 12px; right: 12px;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  padding: 6px 14px;
+  z-index: 20;
+}
+#navButtons { display: flex; gap: 6px; justify-self: start; }
+.navbtn {
+  background: #141c24; border: 1px solid #2a3a44; color: #a9c3cb;
+  padding: 7px 14px; font-size: 11px; letter-spacing: .5px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.navbtn:hover { background: #1a2530; }
+.navbtn.active { background: #1c3a34; border-color: #2f5f52; color: #9fe8d0; }
+.navicon { width: 15px; height: 15px; flex-shrink: 0; }
+
+#clockCenter { justify-self: center; text-align: center; }
+#clockDateRow { font-size: 14px; color: #e0c97f; font-weight: 600; letter-spacing: .5px; margin-bottom: 4px; }
+#clockDateRow #clockTime { margin-left: 10px; color: #cfe3e8; font-weight: 400; }
+#speedControls { display: flex; gap: 3px; justify-content: center; }
+#speedControls button {
+  background: #141c24; border: 1px solid #2a3a44; color: #a9c3cb;
+  padding: 3px 8px; font-size: 10px; cursor: pointer;
+}
+#speedControls button.active { background: #1c3a34; border-color: #2f5f52; color: #9fe8d0; }
+#speedControls button:hover { background: #1a2530; }
+
+#alertBell { justify-self: end; font-size: 15px; color: #e07f7f; cursor: pointer; }
+
+/* INSIGHT PANEL (click a dock stat to open) — centered + scroll-contained,
+   so it can never get clipped off-screen the way a cursor-following
+   tooltip could near the viewport edge. */
+#insightModal {
+  position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 110;
+  display: flex; align-items: center; justify-content: center;
+}
+#insightModal.hidden { display: none; }
+#insightBox {
+  background: #101820; border: 1px solid #35505c; border-radius: 6px;
+  width: min(420px, 90vw); max-height: 80vh; display: flex; flex-direction: column;
+  box-shadow: 0 10px 40px rgba(0,0,0,.6);
+}
+#insightHead {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 16px; border-bottom: 1px solid #1e2830; flex-shrink: 0;
+}
+#insightTitle { font-size: 13px; letter-spacing: 1px; color: #7fe0c9; }
+#insightClose { background: none; border: none; color: #a9c3cb; font-size: 16px; cursor: pointer; }
+#insightClose:hover { color: #fff; }
+#insightBody { padding: 14px 16px; overflow-y: auto; font-size: 12px; color: #cfe3e8; }
+#insightBody h4 { margin: 0 0 6px 0; color: #7fe0c9; font-size: 12px; letter-spacing: 1px; }
+#insightBody .row { display: flex; justify-content: space-between; gap: 14px; padding: 3px 0; }
+#insightBody .row.total { border-top: 1px solid #2a3a44; margin-top: 4px; padding-top: 4px; font-weight: 600; }
+#insightBody .pos { color: #7fe0a0; }
+#insightBody .neg { color: #e08f7f; }
+#insightBody .adjustRow { align-items: center; }
+#insightBody .adjustControls { display: flex; align-items: center; gap: 8px; }
+#insightBody .adjustControls b { color: #e0c97f; min-width: 66px; text-align: right; }
+#insightBody .adjBtn {
+  background: #141c24; border: 1px solid #2a3a44; color: #cfe3e8; width: 22px; height: 22px;
+  border-radius: 3px; cursor: pointer; font-size: 13px; line-height: 1; padding: 0;
+}
+#insightBody .adjBtn:hover { background: #1c2a34; border-color: #3a5560; }
+
+/* MAP
+   IMPORTANT: position:relative alone does NOT create a CSS stacking context —
+   it also needs a z-index. Without one, Leaflet's internal panes/controls
+   (which use z-index up to 1000) leak out of #mapwrap and compete directly
+   against our topbar/drawer/dock/modal, sitting on top of them and eating
+   clicks. Setting z-index here contains Leaflet inside its own stacking
+   context so any z-index on a sibling reliably wins. */
+#mapwrap { grid-area: map; position: relative; z-index: 1; background: #05080b; overflow: hidden; }
+#mapcanvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+#overlaycanvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
+#menuMapCanvas { width: 100%; height: 100%; display: block; }
+#hint {
+  position: absolute; bottom: 10px; left: 10px; font-size: 11px; color: #cfe3e8;
+  background: rgba(10,15,20,.75); padding: 5px 9px; border-radius: 3px; z-index: 500;
+}
+
+/* Leaflet marker/tooltip theming */
+.city-label, .poi-tip, .road-tip {
+  background: rgba(10,15,20,.8) !important; border: 1px solid #2a3a44 !important;
+  color: #cfe3e8 !important; font-size: 11px !important; box-shadow: none !important;
+}
+.leaflet-tooltip-right.city-label::before { border-right-color: #2a3a44 !important; }
+.city-label-tag {
+  display: inline-block;
+  background: rgba(10,15,20,.8); border: 1px solid #2a3a44; color: #cfe3e8;
+  font-size: 11px; padding: 1px 5px; border-radius: 2px; white-space: nowrap;
+  transform: translate(6px, -8px); pointer-events: none;
+}
+/* Placed buildings — a checkered "under construction / built" tile plus a
+   name label, rendered exactly at the point the player clicked. */
+.building-pending {
+  display: flex; align-items: center; justify-content: center; font-size: 12px;
+  border: 1.5px dashed #0a0f14; border-radius: 2px; opacity: 0.85;
+  box-shadow: 0 0 4px rgba(0,0,0,.7); animation: buildPulse 1.4s ease-in-out infinite;
+}
+@keyframes buildPulse { 0%,100% { opacity: 0.55; } 50% { opacity: 0.95; } }
+.building-marker { display: flex; flex-direction: column; align-items: center; pointer-events: none; }
+.building-checker {
+  width: 20px; height: 20px;
+  background-image: repeating-conic-gradient(#e0c97f 0% 25%, #0a0f14 0% 50%);
+  background-size: 7px 7px;
+  border: 1.5px solid #0a0f14; border-radius: 2px;
+  box-shadow: 0 0 4px rgba(0,0,0,.7);
+}
+/* Fixed pixel size — Leaflet markers don't scale with zoom, so the label
+   reads the same at every zoom level. */
+.building-marker-name {
+  margin-top: 2px; font-size: 11px; line-height: 1.2; color: #fff; background: rgba(10,15,20,.85);
+  padding: 1px 6px; border-radius: 2px; white-space: nowrap;
+}
+
+.city-label-capital {
+  font-size: 13px; font-weight: 700; color: #ffe08a; border-color: #7a6a3a;
+  padding: 2px 7px;
+}
+.poi-icon {
+  width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; font-size: 11px; border: 1.5px solid #0a0f14;
+}
+.poi-air { background: #7fb0e0; color: #0a0f14; }
+.poi-mil { background: #e0917f; color: #0a0f14; }
+.poi-port { background: #7fe0c9; color: #0a0f14; }
+.poi-base { background: #e0c97f; color: #0a0f14; font-size: 9px; }
+.unit-icon {
+  background: #7fe0c9; color: #0a0f14; border: 1.5px solid #0a0f14; border-radius: 3px;
+  font-size: 9px; font-weight: 700; width: 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+}
+.unit-icon.unit-selected { background: #ffe08a; box-shadow: 0 0 6px #ffe08a; }
+
+/* SELECTED UNIT PANEL (top-left, under nav) */
+/* SELECTED UNIT PANEL (bottom-left, stacked above the city panel).
+   `bottom` is set from JS by layoutBottomLeftPanels() so the two never overlap. */
+#unitPanel {
+  position: absolute; left: 12px; bottom: 84px; width: 340px; z-index: 501;
+  background: #0e1319ee; border: 1px solid #1e2830; border-radius: 4px;
+  padding: 11px 13px; font-size: 12.5px; line-height: 1.5; color: #a9c3cb;
+  max-height: 60%; overflow-y: auto;
+}
+#unitPanel.hidden { display: none; }
+#unitPanelHead {
+  font-size: 11px; letter-spacing: 1px; color: #7fe0c9;
+  margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid #1e2830;
+  display: flex; justify-content: space-between; align-items: center;
+}
+#selectedUnitBox b { color: #e0c97f; }
+
+/* --- readable unit readout --- */
+.uTitle { font-size: 14px; color: #dfe9ec; font-weight: 700; }
+.uSubline { color: #8fa6b0; font-size: 11.5px; margin-bottom: 8px; }
+/* Labelled bar used for supply and condition — much faster to read than a number. */
+.uBarRow { display: flex; align-items: center; gap: 8px; margin: 5px 0; }
+.uBarRow .uBarLabel { width: 66px; font-size: 11px; color: #8fa6b0; flex: none; }
+.uBarRow .uBarTrack {
+  flex: 1; height: 9px; background: #10161c; border: 1px solid #24313b;
+  border-radius: 5px; overflow: hidden;
+}
+.uBarRow .uBarFill { height: 100%; border-radius: 4px; }
+.uBarRow .uBarVal { width: 42px; text-align: right; font-size: 11.5px; font-weight: 700; flex: none; }
+.uSection {
+  margin-top: 9px; padding-top: 7px; border-top: 1px solid #1e2830;
+  font-size: 10px; letter-spacing: 0.08em; color: #6f8791;
+}
+.uKeyHint { color: #6f8791; font-size: 10.5px; }
+.uKeyHint kbd {
+  background: #1a2530; border: 1px solid #2a3a44; border-radius: 3px;
+  padding: 0 4px; font-family: monospace; color: #cfe3e8; font-size: 10.5px;
+}
+
+/* MAP LAYER TOGGLES (bottom-right) */
+#layerToggles {
+  position: absolute; right: 12px; bottom: 12px; z-index: 40;
+  padding: 8px 10px; font-size: 11px; color: #cfe3e8;
+  display: flex; flex-direction: column; gap: 5px;
+}
+#layerToggles label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+#layerToggles input { accent-color: #7fe0c9; }
+/* Section headers in the layer dock — the list got long enough to need them. */
+#layerToggles .toggleGroup {
+  font-size: 9px; letter-spacing: 0.09em; color: #6f8791;
+  margin-top: 5px; padding-bottom: 1px; border-bottom: 1px solid #1e2830;
+}
+#layerToggles .toggleGroup:first-child { margin-top: 0; }
+/* The dock can now outgrow short windows — let it scroll rather than overflow. */
+#layerToggles { max-height: calc(100vh - 200px); overflow-y: auto; }
+
+/* CITY INFO PANEL (bottom-left) */
+#cityPanel {
+  position: absolute; left: 0; bottom: 54px; width: 340px; z-index: 45;
+  background: #0e1319ee; border-right: 1px solid #1e2830; border-top: 1px solid #1e2830;
+  display: flex; flex-direction: column; max-height: 70%;
+}
+#cityPanel.hidden { display: none; }
+#cityPanelHead {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 14px; border-bottom: 1px solid #1e2830; font-size: 13px;
+  color: #e0c97f; font-weight: 600;
+}
+#cityPanelClose { background: none; border: none; color: #a9c3cb; font-size: 14px; cursor: pointer; }
+#cityPanelClose:hover { color: #fff; }
+#cityPanelBody { padding: 10px 14px; overflow-y: auto; font-size: 12px; color: #a9c3cb; }
+#cityPanelBody .row { display: flex; justify-content: space-between; padding: 3px 0; }
+#cityPanelBody .row b { color: #cfe3e8; }
+/* Image-card pickers for build/deploy — real reference photos, not a
+   plain <select>, so you can see what you're actually placing. */
+.pickerGrid {
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin: 8px 0;
+}
+.pickCard {
+  border: 1.5px solid #2a3a44; border-radius: 6px; overflow: hidden; cursor: pointer;
+  background: #141c24; transition: border-color .1s ease;
+}
+.pickCard:hover { border-color: #3a5560; }
+.pickCard-selected { border-color: #7fe0c9; box-shadow: 0 0 0 1px #7fe0c9; }
+.pickImgWrap { position: relative; height: 64px; background: #0a0f14; }
+.pickFallback {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 26px; opacity: 0.55;
+}
+.pickCard img { position: relative; width: 100%; height: 64px; object-fit: cover; display: block; background: #0a0f14; }
+.pickCardName { font-size: 10px; padding: 5px 6px; color: #cfe3e8; line-height: 1.3; }
+.pickStats { font-size: 9px; color: #8fb0bb; margin-top: 3px; letter-spacing: -0.2px; }
+
+.sectorTabs { display: flex; gap: 4px; margin-bottom: 6px; flex-wrap: wrap; }
+.sectorTab {
+  background: #141c24; border: 1px solid #2a3a44; color: #a9c3cb; padding: 4px 8px;
+  font-size: 10.5px; cursor: pointer; border-radius: 3px;
+}
+.sectorTab:hover { background: #1a2530; }
+.sectorTab-active { background: #1c3a34; border-color: #2f5f52; color: #9fe8d0; }
+.saturation-warn { color: #e0c97f; font-size: 10.5px; margin-top: 2px; }
+
+#cityPanelBody .cityActions,
+#cityPanelBody .cityActionButtons { display: flex; gap: 8px; margin-top: 10px; }
+#cityPanelBody .cityActions button,
+#cityPanelBody .cityActionButtons button {
+  flex: 1; background: #1c3a34; border: 1px solid #2f5f52; color: #9fe8d0;
+  padding: 8px; font-size: 12px; cursor: pointer; border-radius: 3px;
+}
+#cityPanelBody .cityActions button:hover,
+#cityPanelBody .cityActionButtons button:hover { background: #24493f; }
+#cityPanelBody .cityActionButtons button:disabled {
+  opacity: .4; cursor: not-allowed; background: #141c24; color: #6f8b95;
+}
+
+/* DRAWER PANEL */
+#drawer {
+  position: absolute; top: 62px; right: 0; bottom: 54px; width: 340px;
+  background: #0e1319ee; border-left: 1px solid #1e2830; z-index: 40;
+  display: flex; flex-direction: column;
+}
+/* display:none (not a translateX slide) — a transformed-but-present box
+   still counts toward scrollable overflow even under overflow:hidden, and
+   an incidental scroll-into-view on its contents would drag the whole
+   layout sideways underneath itself. See #app's overflow:hidden comment. */
+#drawer.hidden { display: none; }
+#drawerHead {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 14px; border-bottom: 1px solid #1e2830; font-size: 12px;
+  letter-spacing: 1px; color: #7fe0c9;
+}
+#drawerClose { background: none; border: none; color: #a9c3cb; font-size: 14px; cursor: pointer; }
+#drawerClose:hover { color: #fff; }
+#drawerBody { padding: 12px 14px; overflow-y: auto; font-size: 12px; flex: 1; }
+.tabpane { display: none; }
+.tabpane.active { display: block; }
+
+.panelhead {
+  font-size: 11px; letter-spacing: 1px; color: #6f8b95; border-bottom: 1px solid #1e2830;
+  padding-bottom: 4px; margin-bottom: 6px;
+}
+#inventoryList .invrow { display: flex; justify-content: space-between; padding: 2px 0; color: #a9c3cb; }
+#inventoryList .invrow b { color: #cfe3e8; }
+
+.formbox { display: flex; flex-direction: column; gap: 6px; }
+.formbox select, .formbox button {
+  background: #141c24; color: #cfe3e8; border: 1px solid #2a3a44; padding: 6px; font-size: 12px;
+}
+.formbox button { cursor: pointer; background: #1c3a34; border-color: #2f5f52; color: #9fe8d0; }
+.formbox button:hover { background: #24493f; }
+.formbox button:disabled { opacity: .4; cursor: not-allowed; background: #141c24; color: #6f8b95; }
+#buildCostLine, #unitCostLine { font-size: 11px; color: #e0c97f; }
+#buildCostLine .afford-no, #unitCostLine .afford-no { color: #e08f7f; }
+
+#selectedUnitBox { color: #a9c3cb; line-height: 1.5; }
+#selectedUnitBox b { color: #e0c97f; }
+
+.policyrow { margin-bottom: 10px; }
+.policyrow label { display: block; font-size: 11px; color: #a9c3cb; margin-bottom: 2px; }
+.policyrow input[type=range] { width: 78%; vertical-align: middle; }
+.policyrow .policyVal { float: right; color: #7fe0c9; font-size: 11px; }
+.policyrow .checkboxRow { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.policyrow .checkboxRow input { accent-color: #7fe0c9; }
+
+/* NATION tab cards */
+.nationCard {
+  background: #10171f; border: 1px solid #1e2830; border-radius: 5px;
+  padding: 10px 12px; margin-bottom: 10px;
+}
+.nationCardHead { font-size: 12px; font-weight: 600; color: #e0c97f; margin-bottom: 6px; }
+.nationCardStats { margin-bottom: 8px; }
+.nationCardStats .row { display: flex; justify-content: space-between; padding: 2px 0; font-size: 11.5px; }
+.nationCardStats .row b { color: #7fe0c9; }
+
+#eventLog { font-size: 11px; color: #7c98a2; }
+#eventLog .ev { padding: 4px 0; border-bottom: 1px solid #16202a; }
+#eventLog .ev .t { color: #4c6873; font-size: 10px; }
+
+#constructionQueue .cq, #completedBuildingsList .cb {
+  padding: 4px 0; border-bottom: 1px solid #16202a; color: #a9c3cb; font-size: 11px;
+}
+#constructionQueue .bar { height: 4px; background: #1e2830; margin-top: 3px; border-radius: 2px; overflow: hidden; }
+#constructionQueue .bar .fill { height: 100%; background: #7fe0c9; }
+.empty-msg { color: #4c6873; font-style: italic; font-size: 11px; }
+
+/* BOTTOM STAT DOCK — a floating pill centred at the bottom, not touching any
+   edge, sitting over the full-screen map. */
+#bottomdock {
+  position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: stretch; padding: 4px 8px; z-index: 20;
+  max-width: calc(100vw - 24px);
+}
+.dockitem {
+  display: flex; flex-direction: column; justify-content: center;
+  padding: 3px 14px; min-width: 84px;
+}
+.dockitem.stat:hover { background: #17232b; cursor: pointer; }
+.dlabel { font-size: 9px; letter-spacing: 1px; color: #6f8b95; }
+.dval { font-size: 15px; color: #7fe0c9; font-weight: 600; display: flex; align-items: baseline; gap: 4px; transition: color .3s ease; }
+.trendArrow { font-size: 10px; line-height: 1; transition: font-size .2s ease; }
+
+/* EVENT MODAL */
+#eventModal {
+  position: fixed; inset: 0; background: rgba(6,10,14,.28); z-index: 100;
+  display: flex; align-items: center; justify-content: center;
+}
+#eventModal.hidden { display: none; }
+#eventModalBox {
+  background: #101820; border: 1px solid #35505c; border-radius: 6px; padding: 20px;
+  width: 460px; box-shadow: 0 10px 40px rgba(0,0,0,.6);
+}
+#eventModalTitle { font-size: 15px; color: #e0c97f; margin-bottom: 8px; font-weight: 600; }
+#eventModalBody { font-size: 13px; color: #cfe3e8; margin-bottom: 14px; line-height: 1.5; }
+#eventModalChoices { display: flex; flex-direction: column; gap: 7px; }
+#eventModalChoices button {
+  background: #141c24; border: 1px solid #2a3a44; color: #cfe3e8; padding: 8px 10px;
+  text-align: left; cursor: pointer; font-size: 12px; display: flex; flex-direction: column; gap: 3px;
+}
+#eventModalChoices button:hover { background: #1c2a34; border-color: #3a5560; }
+#eventModalChoices .choice-label { font-weight: 600; }
+#eventModalChoices .choice-preview { font-size: 10.5px; color: #9fb5bd; }
+#eventModalChoices .choice-preview .pos { color: #7fe0a0; }
+#eventModalChoices .choice-preview .neg { color: #e08f7f; }
+#eventModalChoices .choice-preview .neutral { color: #6f8b95; }
+#eventModalDeadline { font-size: 11px; color: #e0917f; margin-bottom: 8px; }
+#eventModalFooter { display: flex; gap: 8px; margin-top: 12px; }
+#eventModalFooter button {
+  flex: 1; background: #141c24; border: 1px solid #2a3a44; color: #a9c3cb;
+  padding: 7px; font-size: 11px; cursor: pointer;
+}
+#eventModalFooter button:hover { background: #1c2a34; }
+#eventModalExperts:disabled { opacity: .5; cursor: not-allowed; }
+
+/* PENDING DECISIONS TRAY */
+/* Decisions live as a bottom-left mail tray now (no centre-screen popup). */
+#pendingDecisions {
+  position: absolute; left: 12px; bottom: 66px; z-index: 500;
+  display: flex; flex-direction: column; gap: 5px; max-width: 260px; align-items: flex-start;
+}
+/* The city panel occupies the bottom-left corner — slide the mail tray to its
+   right whenever the panel is open so neither covers the other. (Class is
+   toggled from openCityPanel/closeCityPanel; :has() proved unreliable here.) */
+#pendingDecisions.tray-shifted { left: 352px; }
+#pendingDecisions.hidden { display: none; }
+.mailHeader { font-size: 10px; letter-spacing: 0.5px; color: #e0c97f; margin-bottom: 2px; }
+.mailItem {
+  background: #1a2230; border: 1px solid #3a4a5a; color: #cfe3e8; font-size: 11px;
+  padding: 5px 9px; border-radius: 4px; cursor: pointer; display: flex; gap: 6px; align-items: center;
+  max-width: 240px; font-family: inherit; animation: mailIn .25s ease;
+}
+.mailItem:hover { background: #223047; border-color: #7fb0e0; }
+.mailLabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px; }
+.mailBadge { margin-left: auto; color: #e0c97f; font-size: 10px; background: #0a0f14; padding: 1px 5px; border-radius: 8px; }
+@keyframes mailIn { from { transform: translateX(-8px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* Placement ghost + effect tooltip that follows the cursor */
+.ghostWrap { position: relative; }
+.ghostWrap .building-checker { opacity: 0.55; box-shadow: 0 0 0 2px #7fe0c9; }
+.ghostWrap.bad .building-checker { box-shadow: 0 0 0 2px #e06c60; }
+.ghostTip {
+  position: absolute; left: 120%; top: 50%; transform: translateY(-50%);
+  white-space: nowrap; background: #0a0f14ee; border: 1px solid #2a3a44; border-radius: 4px;
+  padding: 5px 8px; font-size: 10.5px; color: #cfe3e8; line-height: 1.4; pointer-events: none;
+}
+.ghostTip b { color: #7fe0c9; }
+.ghostCost { color: #e0c97f; }
+.ghostBad { color: #e06c60; }
+
+/* Completed building photo tile (checker background shows if the image fails) */
+.building-photo { position: relative; border: 1.5px solid #0a0f14; border-radius: 2px; overflow: hidden; box-shadow: 0 0 4px rgba(0,0,0,.7); }
+.building-photo img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+
+/* Construction countdown label */
+.buildCountdown { background: #0a0f14dd !important; border: 1px solid #4a3f22 !important; color: #ffe08a !important; font-size: 10px !important; }
+.buildCountdown::before { border-top-color: #4a3f22 !important; }
+
+/* Trade partner reliability note */
+.partnerNote { font-size: 10.5px; color: #90a8b0; margin: 6px 0; line-height: 1.4; }
+.partnerNote b { color: #7fe0c9; }
+
+/* Building/zone popups (efficiency + demolish) */
+/* Floating popup anchored to a lat/lon on the WebGL map (replaces L.popup). */
+#mapPopup {
+  position: absolute; z-index: 500; transform: translate(-50%, -100%);
+  background: #0e1319; color: #cfe3e8; border: 1px solid #2a3a44; border-radius: 5px;
+  padding: 9px 11px; max-width: 300px; box-shadow: 0 4px 14px rgba(0,0,0,0.55);
+}
+#mapPopup::after {
+  content: ""; position: absolute; left: 50%; bottom: -6px; margin-left: -6px;
+  border: 6px solid transparent; border-top-color: #2a3a44; border-bottom: 0;
+}
+#mapPopup .mapPopupClose {
+  position: absolute; top: 2px; right: 5px; cursor: pointer;
+  color: #6f8791; font-size: 14px; line-height: 1; background: none; border: 0;
+}
+#mapPopup .mapPopupClose:hover { color: #cfe3e8; }
+.bldgPopup, .zonePopup { font-size: 11.5px; line-height: 1.5; min-width: 170px; }
+.bldgPopup b, .zonePopup b { color: #dfe9ec; }
+.bpEff, .zpDesc { font-size: 10.5px; color: #90a8b0; margin: 4px 0; }
+.zoneLacks { font-size: 10.5px; color: #e0a860; margin: 4px 0; }
+.zpGood { font-size: 10.5px; color: #7fe0a0; margin: 4px 0; }
+.bpDelete {
+  display: block; width: 100%; margin-top: 6px; font-size: 11px; cursor: pointer;
+  background: #2a1416; border: 1px solid #6e3a38; color: #e6a09a; border-radius: 3px; padding: 5px;
+}
+.bpDelete:hover { background: #3a1c1e; }
+.zoneCard { cursor: pointer; }
+.zoneDrawHint { font-size: 12px; font-weight: 600; width: 100%; }
+
+/* Zone popup per-resource supply lines */
+.zSupplyHead { font-size: 10px; letter-spacing: 0.5px; color: #7c98a2; margin: 7px 0 3px; }
+.zRow { display: flex; align-items: center; gap: 6px; font-size: 10.5px; padding: 2px 0; }
+.zRow .zDot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.zRow .zNums { margin-left: auto; text-align: right; }
+
+/* Trade: monthly import tag + world map button */
+.monthlyTag { color: #7fb0e0; }
+#openTradeMapBtn {
+  width: 100%; margin-top: 8px; font-size: 12px; cursor: pointer; font-family: inherit;
+  background: #16222e; border: 1px solid #2f4a5a; color: #a9c3cb; border-radius: 4px; padding: 7px;
+}
+#openTradeMapBtn:hover { border-color: #7fb0e0; color: #cfe3e8; }
+.tradeBuyMonthly, .tradeBuyClear {
+  font-size: 11px; background: #16222e; border: 1px solid #2f4a5a; color: #a9c3cb;
+  border-radius: 3px; padding: 4px 8px; cursor: pointer;
+}
+.tradeBuyMonthly:hover, .tradeBuyClear:hover { border-color: #7fb0e0; color: #cfe3e8; }
+.elecRow { border-color: #2f4a5a; }
+
+/* World trade map overlay */
+#tradeMapOverlay {
+  position: absolute; inset: 0; z-index: 125; background: #060a0edd;
+  display: flex; align-items: center; justify-content: center;
+}
+#tradeMapOverlay.hidden { display: none; }
+#tradeMapBox {
+  width: 94%; height: 88%; background: #0b1016; border: 1px solid #24313b; border-radius: 6px;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+#tradeMapHead {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 14px; border-bottom: 1px solid #1e2830; color: #7fe0c9; font-size: 13px; letter-spacing: 1px;
+}
+#tradeMapHead select {
+  background: #10171f; color: #cfe3e8; border: 1px solid #2a3a44; border-radius: 3px;
+  font-size: 12px; padding: 3px 6px; font-family: inherit; margin: 0 4px;
+}
+#tradeMapClose {
+  background: none; border: 1px solid #2a3a44; color: #a9c3cb; border-radius: 4px;
+  width: 28px; height: 28px; cursor: pointer; font-size: 14px;
+}
+#tradeMapClose:hover { border-color: #e06c60; color: #e06c60; }
+#tradeMapBody { flex: 1; display: flex; min-height: 0; }
+#tradeMapCanvas { flex: 1; background: #0a0f14; position: relative; overflow: hidden; }
+/* Hover readout for the canvas world map (replaces Leaflet's tooltip). */
+.tmTip {
+  position: absolute; z-index: 5; pointer-events: none;
+  background: rgba(10, 15, 20, 0.92); border: 1px solid #2a3a44; border-radius: 4px;
+  color: #cfe3e8; font-size: 11px; padding: 4px 7px; white-space: nowrap;
+}
+.tmTip.hidden { display: none; }
+/* Supply line under the unit panel's supply readout. */
+.usupplyNote { color: #8fa6b0; font-size: 10.5px; }
+#tradeMapSide {
+  width: 320px; border-left: 1px solid #1e2830; padding: 12px; overflow-y: auto;
+  font-size: 12px; color: #a9c3cb;
+}
+#tradeCountryPanel.hidden, #tradeListWrap.hidden { display: none; }
+#tmBack {
+  width: 100%; margin-bottom: 10px; font-size: 11px; cursor: pointer; font-family: inherit;
+  background: #131b22; border: 1px solid #2a3a44; color: #a9c3cb; border-radius: 3px; padding: 5px;
+}
+#tmBack:hover { border-color: #7fb0e0; color: #cfe3e8; }
+
+/* Policies panel rows */
+.polRow { margin-bottom: 9px; }
+.polRow .checkboxRow { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; color: #cfe3e8; }
+.polRow input { accent-color: #7fe0c9; }
+#tradeMapSide .row { display: flex; justify-content: space-between; padding: 3px 0; }
+#tradeMapSide .row b { color: #dfe9ec; }
+#tradeMapSide .row b.pos { color: #7fe0a0; } #tradeMapSide .row b.neg { color: #e08f7f; }
+.tmCountry { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; color: #dfe9ec; letter-spacing: 0.5px; }
+.tmFlag { font-size: 20px; }
+.tmBuyRow { display: flex; gap: 6px; margin-top: 10px; }
+.tmBuyRow input {
+  width: 60px; background: #0a0f14; color: #cfe3e8; border: 1px solid #2a3a44;
+  border-radius: 3px; padding: 4px 6px; font-size: 11px; font-family: inherit;
+}
+.tmBuyRow button {
+  flex: 1; font-size: 11px; background: #1c3a34; border: 1px solid #2f5f52; color: #9fe8d0;
+  border-radius: 3px; padding: 5px; cursor: pointer;
+}
+.tmBuyRow button:hover { filter: brightness(1.15); }
+.tmHint { font-size: 10.5px; color: #6f8791; margin-top: 8px; line-height: 1.45; }
+.tmElecBlock { margin-top: 12px; padding: 9px 10px; background: #0c1319; border: 1px solid #21303a; border-radius: 5px; }
+.tmElecHead { font-size: 12px; font-weight: 600; color: #cfe3e8; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.tmElecHead .tmHint { margin-top: 0; font-weight: 400; }
+
+/* CITY PANEL build/deploy inline forms */
+#cpBuildCostLine, #cpUnitCostLine { font-size: 11px; color: #e0c97f; }
+#cpBuildCostLine .afford-no, #cpUnitCostLine .afford-no { color: #e08f7f; }
+.city-dot-base { box-shadow: 0 0 0 2px #e0917f; }
+
+/* POLICY effect lines */
+.policyEffect { clear: both; font-size: 10.5px; color: #6f8b95; margin-top: 3px; line-height: 1.4; }
+
+/* OVERVIEW tab */
+#overviewGrid .row { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid #16202a; }
+#overviewGrid .row b { color: #7fe0c9; }
+
+/* RESEARCH tab / tech tree */
+#researchSummary { margin-bottom: 10px; }
+#researchSummary .row { display: flex; justify-content: space-between; padding: 3px 0; }
+#researchSummary .row b { color: #7fe0c9; }
+.techBranch { margin-bottom: 14px; }
+.techBranchLabel {
+  font-size: 11px; letter-spacing: 1px; color: #e0c97f; border-bottom: 1px solid #1e2830;
+  padding-bottom: 3px; margin-bottom: 5px;
+}
+.techNode {
+  padding: 5px 8px; margin-bottom: 3px; border-radius: 3px; font-size: 11px;
+  border: 1px solid #1e2830; cursor: default;
+}
+.techNode.tech-unlocked { background: #16241c; border-color: #2f5f3f; }
+.techNode.tech-available { background: #141c24; border-color: #2f5f52; cursor: pointer; }
+.techNode.tech-available:hover { background: #1a2530; }
+.techNode.tech-locked { opacity: .45; }
+.techNodeName { color: #cfe3e8; font-weight: 600; }
+.techNodeEffect { color: #9fb5bd; font-size: 10px; margin-top: 1px; }
+.techNodeCost { color: #7fe0c9; font-size: 10px; margin-top: 2px; }
+
+/* ROAD/RAIL BUILD BAR */
+#roadBuildBar {
+  /* Sits below the floating top bar (top:10 + ~54px tall) so it isn't covered. */
+  position: absolute; top: 78px; left: 50%; transform: translateX(-50%); z-index: 800;
+  background: #0e1319f5; border: 1px solid #2a3a44; border-radius: 4px;
+  padding: 10px 14px; display: flex; align-items: center; gap: 14px; font-size: 12px;
+  max-width: 90vw;
+}
+#roadBuildBar.hidden { display: none; }
+#roadBuildCost { color: #e0c97f; line-height: 1.5; }
+#roadBuildCost b { color: #ffe08a; }
+.buildReasons { color: #9fb5bd; font-size: 10.5px; }
+#roadBuildBar button {
+  background: #1c3a34; border: 1px solid #2f5f52; color: #9fe8d0; padding: 5px 10px;
+  font-size: 11px; cursor: pointer; flex-shrink: 0;
+}
+#roadBuildConfirm:disabled { opacity: .4; cursor: not-allowed; }
+#roadBuildCancel { background: #3a1c1c !important; border-color: #5f2f2f !important; color: #e89f9f !important; }
+
+.toggleDivider { border-top: 1px solid #2a3a44; margin: 4px 0; }
+#layerToggles button {
+  background: #141c24; border: 1px solid #2a3a44; color: #a9c3cb; padding: 5px 8px;
+  font-size: 11px; cursor: pointer; text-align: left;
+}
+#layerToggles button:hover { background: #1a2530; }
+
+/* ---- DIPLOMACY ---- */
+#diplomacyList { display: flex; flex-direction: column; gap: 12px; }
+.diploStanding {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+  background: #0e1319; border: 1px solid #1e2830; border-radius: 4px;
+  font-size: 11px; letter-spacing: 0.5px; color: #a9c3cb;
+}
+.sanctionTag { color: #e06c60; font-weight: 700; font-size: 10px; letter-spacing: 1px; }
+.diploCard {
+  background: #0e1319; border: 1px solid #1e2830; border-radius: 4px;
+  padding: 12px 14px; font-size: 12px; color: #a9c3cb;
+}
+.diploCard.atwar { border-color: #e06c60; box-shadow: 0 0 8px #e06c6033; }
+.nationHead { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.nationHead b { color: #dfe9ec; letter-spacing: 1px; }
+.nationFlag { font-size: 18px; }
+.relTag { font-size: 10px; font-weight: 700; letter-spacing: 1px; margin-left: auto; }
+.orgTag {
+  font-size: 9px; border: 1px solid #2a3a44; border-radius: 3px; padding: 1px 5px;
+  color: #7c98a2; letter-spacing: 1px;
+}
+.nationStats { font-size: 11px; color: #7c98a2; margin-bottom: 4px; }
+.nationBlurb { font-size: 11px; color: #5f7680; font-style: italic; margin-bottom: 8px; }
+.relRow { display: flex; align-items: center; gap: 8px; margin: 3px 0; font-size: 10px; letter-spacing: 0.5px; }
+.relRow > span { width: 62px; color: #7c98a2; }
+.relRow b { width: 26px; text-align: right; color: #dfe9ec; }
+.relbar { flex: 1; height: 7px; background: #131b22; border-radius: 4px; overflow: hidden; }
+.relfill { height: 100%; border-radius: 4px; transition: width 0.4s; }
+.nationActions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.diplobtn {
+  background: #131b22; border: 1px solid #2a3a44; border-radius: 3px; color: #a9c3cb;
+  font-size: 11px; padding: 5px 9px; cursor: pointer; font-family: inherit;
+}
+.diplobtn:hover:not(:disabled) { border-color: #7fe0c9; color: #7fe0c9; }
+.diplobtn:disabled { opacity: 0.4; cursor: not-allowed; }
+.diplobtn small { color: #5f7680; }
+.diplobtn.war { border-color: #6e3a38; color: #e06c60; }
+.diplobtn.war:hover { border-color: #e06c60; }
+.diplobtn.war.armed { background: #e06c60; color: #0a0f14; font-weight: 700; border-color: #e06c60; }
+.diplobtn.peace { border-color: #7fc97f; color: #7fc97f; }
+.pactTag { font-size: 10px; color: #7fc97f; align-self: center; padding: 0 4px; }
+.warStatus {
+  width: 100%; background: #1a1214; border: 1px solid #6e3a38; border-radius: 3px;
+  padding: 8px 10px; font-size: 11px; line-height: 1.6; color: #c9a9a9;
+}
+
+/* War banner over the map */
+#warBanner {
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+  z-index: 780; background: #1a0f10ee; border: 1px solid #e06c60; border-radius: 4px;
+  color: #e8b0aa; padding: 7px 16px; font-size: 11px; letter-spacing: 0.8px;
+  text-align: center; line-height: 1.7; pointer-events: none;
+  animation: warPulse 2s infinite;
+}
+#warBanner.hidden { display: none; }
+#warBanner b { color: #ff8880; }
+@keyframes warPulse {
+  0%, 100% { box-shadow: 0 0 4px #e06c6044; }
+  50% { box-shadow: 0 0 14px #e06c6088; }
+}
+
+/* Enemy formations on the map */
+.enemy-icon {
+  background: #3a1512; color: #ff9a90; border: 1.5px solid #e06c60; border-radius: 3px;
+  font-size: 9px; font-weight: 700; width: 100%; height: 100%; white-space: nowrap;
+  display: flex; align-items: center; justify-content: center; gap: 2px;
+}
+.enemy-icon.enemy-engaged { background: #e06c60; color: #0a0f14; box-shadow: 0 0 8px #e06c60; }
+
+/* ---- RESEARCH OVERLAY (branching tech tree) ---- */
+#researchOverlay {
+  position: absolute; inset: 0; z-index: 120;
+  background: #060a0edd; display: flex; align-items: center; justify-content: center;
+}
+#researchOverlay.hidden { display: none; }
+#researchOverlayBox {
+  width: 94%; height: 90%; background: #0b1016; border: 1px solid #24313b; border-radius: 6px;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+#researchOverlayHead {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 16px; border-bottom: 1px solid #1e2830; color: #7fe0c9;
+  font-size: 13px; letter-spacing: 1px;
+}
+#researchOverlayClose {
+  background: none; border: 1px solid #2a3a44; color: #a9c3cb; border-radius: 4px;
+  width: 28px; height: 28px; cursor: pointer; font-size: 14px;
+}
+#researchOverlayClose:hover { border-color: #e06c60; color: #e06c60; }
+#researchQueueBar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 10px 16px; border-bottom: 1px solid #1e2830; background: #0e141b; min-height: 20px;
+}
+#researchQueueBar.queue-full-flash { background: #2a1414; }
+.qRate { font-size: 11px; color: #e0c97f; letter-spacing: 0.5px; margin-right: 6px; }
+.qEmpty { font-size: 11px; color: #6f8791; font-style: italic; }
+.qChip {
+  font-size: 11px; color: #cfe3e8; border: 1px solid #2a3a44; border-radius: 12px;
+  padding: 3px 10px; background: #10171f;
+}
+.qChip b { color: #7fe0c9; }
+#researchTreeArea { flex: 1; overflow: auto; padding: 10px 16px 24px; }
+.techCat { margin-bottom: 22px; }
+.techCatLabel { font-size: 12px; letter-spacing: 1.5px; font-weight: 700; margin-bottom: 8px; }
+.techCatTree { position: relative; }
+.techConnSvg { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 0; }
+.techTierRow { position: relative; z-index: 1; display: flex; gap: 42px; align-items: flex-start; }
+.techTierCol { display: flex; flex-direction: column; gap: 14px; }
+.techNode {
+  width: 158px; box-sizing: border-box; border-radius: 6px; padding: 8px 10px;
+  border: 1.5px solid #26333d; background: #10171f; cursor: pointer; transition: transform .08s, box-shadow .15s;
+}
+.techNode:hover { transform: translateY(-1px); }
+.tnName { font-size: 12px; font-weight: 600; color: #dfe9ec; margin-bottom: 3px; }
+.tnEff { font-size: 10px; color: #7c98a2; line-height: 1.35; min-height: 26px; }
+.tnStatus { font-size: 10px; margin-top: 5px; letter-spacing: 0.3px; }
+.techNode.tech-locked { opacity: 0.5; cursor: not-allowed; }
+.techNode.tech-locked .tnStatus { color: #6f8791; }
+.techNode.tech-available { border-color: var(--cat, #7fe0c9); }
+.techNode.tech-available .tnStatus { color: var(--cat, #7fe0c9); }
+.techNode.tech-available:hover { box-shadow: 0 0 10px -2px var(--cat, #7fe0c9); }
+.techNode.tech-researching { border-color: #e0c97f; background: #1a1710; box-shadow: 0 0 10px -2px #e0c97f; }
+.techNode.tech-researching .tnStatus { color: #e0c97f; }
+.techNode.tech-unlocked { border-color: #4f8f6a; background: #10201a; }
+.techNode.tech-unlocked .tnStatus { color: #7fc97f; }
+
+/* ---- TRADE & RESOURCES tab ---- */
+.energyCard { background: #0e1319; border: 1px solid #1e2830; border-radius: 4px; padding: 10px 12px; }
+.energyRow { display: flex; justify-content: space-between; font-size: 12px; color: #a9c3cb; padding: 2px 0; }
+.energyRow b { color: #dfe9ec; }
+.energyRow b.pos { color: #7fe0a0; }
+.energyRow b.neg { color: #e08f7f; }
+.elecDealNote { font-size: 10.5px; color: #6f8791; margin: 8px 0 6px; line-height: 1.4; }
+.elecDeals { display: flex; flex-wrap: wrap; gap: 6px; }
+.elecDealBtn {
+  font-size: 10.5px; background: #131b22; border: 1px solid #2a3a44; color: #a9c3cb;
+  border-radius: 3px; padding: 4px 8px; cursor: pointer;
+}
+.elecDealBtn:hover:not(:disabled) { border-color: #7fe0c9; }
+.elecDealBtn.active { background: #7fe0c9; color: #0a0f14; font-weight: 700; border-color: #7fe0c9; }
+.elecDealBtn:disabled { opacity: 0.4; cursor: not-allowed; }
+.tradeTip { font-size: 10.5px; color: #6f8791; font-style: italic; margin-bottom: 10px; line-height: 1.5; }
+
+/* ---- Rehauled resource cards ---- */
+.trCard { background: rgba(16,22,29,0.72); border: 1px solid #202c35; border-left: 3px solid #2c3a45; border-radius: 7px; padding: 9px 11px; margin-bottom: 8px; }
+.trCardTop { display: flex; justify-content: space-between; align-items: baseline; }
+.trName { font-size: 13px; font-weight: 600; color: #e6f1f7; display: flex; align-items: center; gap: 6px; }
+.trName .gi { width: 14px; height: 14px; vertical-align: -0.15em; }
+.trPrice { font-size: 11px; color: #86a0ac; }
+.trBal { font-size: 12px; font-weight: 700; }
+.trFlow { font-size: 11px; color: #a7bdc6; margin-top: 5px; }
+.trFlow b { color: #e6f1f7; }
+.trFlow2 { font-size: 10.5px; color: #8ba1ab; margin-top: 3px; }
+.trFlow2 .pos { color: #7fe0a0; } .trFlow2 .neg { color: #e08f7f; }
+.trFlow2 .monthlyTag { color: #7fb8e8; }
+.trActions { display: flex; align-items: center; gap: 8px; margin-top: 9px; flex-wrap: wrap; }
+.trBuyLink { font-size: 11px; background: #12202b; border: 1px solid #2a4657; color: #8fc4e8; border-radius: 5px; padding: 6px 10px; cursor: pointer; font-family: inherit; }
+.trBuyLink:hover { border-color: #4a86b5; filter: brightness(1.12); }
+
+/* Energy card — a bit more prominent, buy/sell side by side. */
+.trEnergy { border-left-color: #b8912f; background: linear-gradient(180deg, rgba(30,28,16,0.55), rgba(16,22,29,0.72)); }
+.trEnergyGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 9px; }
+.trEnergyCell { background: rgba(10,15,20,0.55); border: 1px solid #22303a; border-radius: 6px; padding: 7px 9px; }
+.trEnergyCell.buy { border-color: #2a4657; }
+.trEnergyCell.sell { border-color: #2f5f52; }
+.trCellHead { font-size: 10px; letter-spacing: 0.5px; text-transform: uppercase; color: #8ba1ab; margin-bottom: 3px; }
+.trEnergyCell b { font-size: 11px; color: #e6f1f7; font-weight: 600; }
+.trEnergyCell.sell b { color: #9fe8d0; }
+.trGoMap { width: 100%; margin-top: 9px; padding: 8px; border-radius: 6px; cursor: pointer; font-family: inherit; font-size: 11.5px; font-weight: 600; background: #17302b; border: 1px solid #2f6f5f; color: #9fe8d0; }
+.trGoMap:hover { filter: brightness(1.15); }
+
+.tradeRow { background: #0e1319; border: 1px solid #1e2830; border-radius: 4px; padding: 8px 10px; margin-bottom: 7px; }
+.tradeHead { display: flex; justify-content: space-between; font-size: 12px; color: #dfe9ec; }
+.tradeHead span { color: #7c98a2; font-size: 11px; }
+.tradeMeta { font-size: 10.5px; color: #90a8b0; margin: 4px 0 6px; }
+.tradeActions { display: flex; align-items: center; gap: 10px; }
+.tradeSell {
+  font-size: 11px; background: #133020; border: 1px solid #4f8f6a; color: #9fe0b8;
+  border-radius: 3px; padding: 4px 10px; cursor: pointer;
+}
+.tradeSell:hover:not(:disabled) { background: #1a4030; }
+.tradeSell:disabled { opacity: 0.4; cursor: not-allowed; }
+.autoSellToggle { font-size: 10.5px; color: #90a8b0; display: flex; align-items: center; gap: 4px; cursor: pointer; }
+
+/* ---- Spending panel (treasury insight) ---- */
+.spendRow { margin-bottom: 10px; }
+.spendHead { display: flex; justify-content: space-between; font-size: 12px; color: #cfe3e8; }
+.spendHead b { color: #7fe0c9; }
+.spendSlider { width: 100%; accent-color: #7fe0c9; margin: 3px 0; }
+.spendMeta { display: flex; justify-content: space-between; gap: 8px; font-size: 10px; color: #7c98a2; }
+.spendConseq { color: #90a8b0; text-align: right; }
+#spendSummary .row.total { border-top: 1px solid #1e2830; margin-top: 4px; padding-top: 4px; }
+
+/* Resource deposit map markers */
+.deposit-marker {
+  display: flex; align-items: center; gap: 3px; white-space: nowrap;
+  font-size: 14px; transform: translate(-50%, -50%);
+}
+.deposit-marker span {
+  font-size: 9px; color: #ffe08a; background: #0a0f14cc; padding: 1px 4px;
+  border-radius: 3px; border: 1px solid #3a3020;
+}
+
+/* Real-world building map markers (bottom-right "Real Buildings" toggle) */
+.realbldg-marker {
+  width: 22px; height: 22px; display: flex; align-items: center; justify-content: center;
+  font-size: 12px; line-height: 1; background: #0a0f14dd; border: 1.5px solid #cccccc;
+  border-radius: 50%; box-shadow: 0 1px 4px #000a; cursor: pointer;
+}
+.realbldg-marker:hover { transform: scale(1.15); }
+.realBldgPopup { font-size: 11.5px; line-height: 1.5; min-width: 190px; max-width: 240px; }
+.realBldgPopup b { color: #dfe9ec; }
+.realBldgPopup .rbCat { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; margin: 2px 0 5px; }
+.realBldgPopup .rbInfo { font-size: 10.5px; color: #b0c0c8; }
+
+/* ---- Top-bar pause/play + arrow speed buttons ---- */
+#speedControls .playpause {
+  font-size: 13px; line-height: 1; padding: 3px 9px; min-width: 30px;
+  color: #e0c97f; border-color: #4a3f22; background: #241f10;
+}
+#speedControls .playpause:hover { background: #2e2714; }
+#speedControls .speedbtn {
+  font-size: 11px; font-weight: 600; padding: 3px 8px; color: #7c98a2; min-width: 30px;
+}
+#speedControls .speedbtn.active { background: #1c3a34; border-color: #2f5f52; color: #9fe8d0; }
+
+/* ---- Road/rail build type picker ---- */
+#roadBuildBar { flex-wrap: wrap; }
+#roadTypePicker { display: flex; gap: 8px; width: 100%; }
+.buildTypeCard {
+  width: 96px; border: 1px solid #2a3a44; border-radius: 4px; overflow: hidden;
+  cursor: pointer; background: #10171f; text-align: center;
+}
+.buildTypeCard.sel { border-color: #ffd35c; box-shadow: 0 0 8px -2px #ffd35c; }
+.buildTypeCard img { width: 100%; height: 46px; object-fit: cover; display: block; background: #06090c; }
+.buildTypeCard .btName { font-size: 10px; color: #dfe9ec; padding: 2px 3px 0; }
+.buildTypeCard .btMeta { font-size: 9px; color: #7c98a2; padding: 0 3px 3px; }
+.buildHint { font-size: 10.5px; color: #90a8b0; margin-top: 8px; line-height: 1.4; }
+.buildHint b { color: #cfe3e8; }
+
+/* ---- Trade: world partner, sell-% and buy controls ---- */
+.tradePartnerSel {
+  width: 100%; background: #10171f; color: #cfe3e8; border: 1px solid #2a3a44;
+  border-radius: 4px; padding: 6px 8px; font-size: 12px; font-family: inherit;
+}
+.sellPctRow { font-size: 10.5px; color: #90a8b0; margin: 6px 0; }
+.sellPctRow b { color: #7fe0c9; }
+.sellPctSlider { width: 100%; accent-color: #7fe0c9; margin-top: 2px; }
+.buyControls { display: inline-flex; align-items: center; gap: 4px; }
+.buyControls input, #elecBuyQty {
+  width: 62px; background: #0a0f14; color: #cfe3e8; border: 1px solid #2a3a44;
+  border-radius: 3px; padding: 3px 5px; font-size: 11px; font-family: inherit;
+}
+.tradeBuy, #elecBuyBtn, #elecClearBtn {
+  font-size: 11px; background: #16222e; border: 1px solid #2f4a5a; color: #a9c3cb;
+  border-radius: 3px; padding: 4px 8px; cursor: pointer;
+}
+.tradeBuy:hover, #elecBuyBtn:hover, #elecClearBtn:hover { border-color: #7fb0e0; color: #cfe3e8; }
+.elecBuyRow { font-size: 10.5px; color: #90a8b0; margin: 8px 0 6px; display: flex; flex-direction: column; gap: 4px; }
+
+/* ---- Insight upgrades: tax consequences, stability breakdown, GDP chart ---- */
+.taxBlock { margin-bottom: 8px; }
+.taxConseq { font-size: 10px; color: #90a8b0; margin: 1px 0 0 2px; line-height: 1.4; }
+.taxConseq .pos { color: #7fe0a0; } .taxConseq .neg { color: #e08f7f; } .taxConseq .neutral { color: #6f8791; }
+.insightNote { font-size: 10.5px; color: #8fa6ae; line-height: 1.45; margin: 6px 0; }
+.gdpRangeBtns { display: flex; gap: 5px; margin: 8px 0 6px; }
+.gdpRangeBtn {
+  flex: 1; font-size: 10.5px; background: #131b22; border: 1px solid #2a3a44; color: #a9c3cb;
+  border-radius: 3px; padding: 4px 6px; cursor: pointer;
+}
+.gdpRangeBtn.active { background: #1c3a34; border-color: #2f5f52; color: #9fe8d0; }
+.gdpChart { width: 100%; height: 90px; background: #0a1016; border: 1px solid #1e2830; border-radius: 4px; }
+.chartFoot { display: flex; justify-content: space-between; font-size: 10px; color: #7c98a2; margin-top: 3px; }
+.chartEmpty { font-size: 11px; color: #6f8791; font-style: italic; padding: 20px 0; text-align: center; }
+
+/* ---- Unit stats + air/ground domain ---- */
+.reqTag { font-size: 9px; color: #e0a860; font-weight: 400; margin-left: 4px; }
+.udomain { font-size: 9px; padding: 1px 5px; border-radius: 3px; letter-spacing: 0.5px; }
+.udomain.air { background: #16303e; color: #7fc9e0; border: 1px solid #2f5a6a; }
+.udomain.ground { background: #1a2a1c; color: #9fd0a0; border: 1px solid #2f5a3a; }
+.ustatgrid { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 6px 0; }
+.ustat { font-size: 10px; color: #90a8b0; }
+.ustat i { font-style: normal; color: #6f8791; margin-right: 3px; }
+.ustat b { color: #cfe3e8; }
+
+/* ---- Transit request modal ---- */
+#transitModal {
+  position: absolute; inset: 0; z-index: 130; display: flex; align-items: center; justify-content: center;
+  background: #060a0ecc;
+}
+#transitModal.hidden { display: none; }
+#transitBox {
+  width: 380px; max-width: 90%; background: #0e1319; border: 1px solid #2a3a44; border-radius: 6px;
+  padding: 16px 18px;
+}
+#transitTitle { font-size: 13px; letter-spacing: 0.5px; color: #e0c97f; margin-bottom: 8px; }
+#transitBody { font-size: 12px; color: #a9c3cb; line-height: 1.5; margin-bottom: 12px; }
+#transitChoices { display: flex; gap: 8px; }
+#transitChoices button {
+  flex: 1; font-size: 12px; background: #1c3a34; border: 1px solid #2f5f52; color: #9fe8d0;
+  border-radius: 4px; padding: 8px; cursor: pointer;
+}
+#transitChoices button.secondary { background: #131b22; border-color: #2a3a44; color: #a9c3cb; }
+#transitChoices button:hover { filter: brightness(1.15); }
+
+/* ---- POLICIES OVERLAY (laws + ideology compass) ---- */
+#policiesOverlay {
+  position: absolute; inset: 0; z-index: 120;
+  background: #060a0edd; display: flex; align-items: center; justify-content: center;
+}
+#policiesOverlay.hidden { display: none; }
+#policiesOverlayBox {
+  width: 88%; height: 90%; max-width: 1100px; background: #0b1016;
+  border: 1px solid #24313b; border-radius: 6px;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+#policiesOverlayHead {
+  display: flex; align-items: center; gap: 18px;
+  padding: 12px 16px; border-bottom: 1px solid #1e2830; color: #7fe0c9;
+  font-size: 13px; letter-spacing: 1px;
+}
+#policiesTabs { display: flex; gap: 6px; margin-right: auto; }
+.ptab {
+  background: #10171f; border: 1px solid #2a3a44; color: #a9c3cb; border-radius: 4px;
+  padding: 5px 14px; cursor: pointer; font-size: 12px; letter-spacing: 0.8px;
+}
+.ptab:hover { background: #1a2530; }
+.ptab.active { background: #1c3a34; border-color: #2f5f52; color: #9fe8d0; }
+#policiesOverlayClose {
+  background: none; border: 1px solid #2a3a44; color: #a9c3cb; border-radius: 4px;
+  width: 28px; height: 28px; cursor: pointer; font-size: 14px;
+}
+#policiesOverlayClose:hover { border-color: #e06c60; color: #e06c60; }
+#policiesBody { flex: 1; overflow: auto; padding: 14px 18px 26px; }
+#policiesLawsPane.hidden, #policiesIdeologyPane.hidden { display: none; }
+
+.lawHint { font-size: 11px; color: #7c98a2; margin-bottom: 12px; font-style: italic; }
+.lawSectionTitle { color: #7fe0c9; font-size: 12px; letter-spacing: 1.5px; margin: 18px 0 8px; }
+.lawCard {
+  background: #10171f; border: 1px solid #26333d; border-radius: 6px;
+  padding: 10px 12px; margin-bottom: 10px;
+}
+.lawHead { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+.lawTitle { font-size: 13px; font-weight: 700; color: #dfe9ec; }
+.lawBlurb { font-size: 11px; color: #6f8791; }
+.lawCd { font-size: 10px; color: #e0c97f; margin-left: auto; }
+.lawOpts { display: flex; gap: 6px; flex-wrap: wrap; }
+.lawOpt {
+  flex: 1 1 0; min-width: 110px; padding: 7px 8px; cursor: pointer;
+  background: #0e141b; border: 1px solid #2a3a44; color: #a9c3cb;
+  border-radius: 4px; font-size: 11.5px; transition: background .1s, border-color .1s;
+}
+.lawOpt:hover { background: #1a2530; border-color: #3a4f5c; }
+.lawOpt.active { background: #1c3a34; border-color: #2f8f6f; color: #9fe8d0; font-weight: 700; }
+.lawFx { font-size: 10.5px; color: #7c98a2; margin-top: 7px; line-height: 1.4; }
+
+/* Ideology compass */
+.ideoWrap { display: flex; gap: 28px; flex-wrap: wrap; align-items: flex-start; padding: 8px 4px; }
+.ideoLeft { position: relative; padding: 22px 64px; }
+#compassBox {
+  position: relative; cursor: crosshair; border: 1px solid #2a3a44; border-radius: 4px;
+  background:
+    linear-gradient(135deg, #3a2430aa 0 50%, transparent 50%),
+    linear-gradient(225deg, #16303aaa 0 50%, transparent 50%),
+    linear-gradient(45deg, #1c3a2daa 0 50%, transparent 50%),
+    linear-gradient(315deg, #33301daa 0 50%, transparent 50%),
+    #0e141b;
+}
+.compassAxisH { position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: #3a4f5c; pointer-events: none; }
+.compassAxisV { position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background: #3a4f5c; pointer-events: none; }
+.ideoQuad {
+  position: absolute; font-size: 10px; color: #ffffff55; letter-spacing: 1px;
+  text-align: center; pointer-events: none; line-height: 1.5;
+}
+.q-al { top: 8px; left: 10px; text-align: left; }
+.q-ar { top: 8px; right: 10px; text-align: right; }
+.q-ll { bottom: 8px; left: 10px; text-align: left; }
+.q-lr { bottom: 8px; right: 10px; text-align: right; }
+#compassDot {
+  position: absolute; width: 14px; height: 14px; border-radius: 50%;
+  background: #7fe0c9; border: 2px solid #0b1016; box-shadow: 0 0 8px #7fe0c9;
+  transform: translate(-50%, -50%); pointer-events: none; z-index: 2;
+}
+#compassTarget {
+  position: absolute; width: 18px; height: 18px; border-radius: 50%;
+  border: 2px dashed #e0c97f; transform: translate(-50%, -50%);
+  pointer-events: none; z-index: 1;
+}
+.ideoAxisLabel { position: absolute; font-size: 10px; letter-spacing: 2px; color: #7c98a2; }
+.ideoTop { top: 2px; left: 50%; transform: translateX(-50%); }
+.ideoBottom { bottom: 2px; left: 50%; transform: translateX(-50%); }
+.ideoLeftLbl { left: 0; top: 50%; transform: translateY(-50%); }
+.ideoRightLbl { right: 0; top: 50%; transform: translateY(-50%); }
+.ideoRight { flex: 1; min-width: 260px; }
+.ideoRight h4 { color: #7fe0c9; font-size: 11px; letter-spacing: 1.5px; margin: 14px 0 6px; }
+.ideoHint { font-size: 11px; color: #7c98a2; font-style: italic; margin-top: 10px; line-height: 1.5; }
+.ideoFxRow { font-size: 11.5px; color: #cfe3e8; padding: 3px 0; border-bottom: 1px dashed #1e2830; }
+
+/* Trade side-panel verdicts + electricity deal button */
+.tmVerdict { font-size: 11px; line-height: 1.45; margin: 8px 0; padding: 7px 9px; border-radius: 4px; background: #10171f; border: 1px solid #26333d; }
+.tmVerdict.pos { border-color: #2f8f6f; color: #9fe8d0; }
+.tmVerdict.neg { border-color: #8f3a32; color: #ffb0a6; }
+.tmDealBtn { width: 100%; margin-top: 8px; padding: 7px; background: #10171f; border: 1px solid #2a3a44; color: #a9c3cb; border-radius: 4px; cursor: pointer; font-size: 11.5px; }
+.tmDealBtn:hover:not(:disabled) { background: #1a2530; }
+.tmDealBtn.active { background: #1c3a34; border-color: #2f8f6f; color: #9fe8d0; }
+.tmDealBtn:disabled { opacity: 0.45; cursor: not-allowed; }
+.tradeBuyMonthlyMinus { background: #241a1a; }
+
+/* Active modifier chips under the top bar */
+#modifierBar {
+  position: absolute; top: 74px; left: 50%; transform: translateX(-50%);
+  z-index: 95; display: flex; gap: 6px; flex-wrap: wrap; justify-content: center;
+  max-width: 70%; pointer-events: auto;
+}
+#modifierBar.hidden { display: none; }
+.modChip {
+  font-size: 10.5px; padding: 3px 9px; border-radius: 12px; cursor: default;
+  background: #0e141bee; border: 1px solid #2a3a44; color: #cfe3e8;
+}
+.modChip.good { border-color: #2f8f6f; color: #9fe8d0; }
+.modChip.bad { border-color: #8f3a32; color: #ffb0a6; }
+
+/* Training progress ring on freshly deployed units */
+.unit-training-ring {
+  width: 32px; height: 32px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  border: 1.5px solid #2a3a44; box-sizing: border-box;
+}
+.unit-training-ring span {
+  width: 22px; height: 22px; border-radius: 50%; background: #0b1016;
+  color: #7fe0c9; font-size: 8px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+}
+.unit-training-ring.unit-selected { border-color: #ffe08a; box-shadow: 0 0 8px #ffe08a88; }
+
+/* Unit image above the name in the selected-unit panel */
+.unitPanelImg {
+  display: block; width: 100%; max-height: 110px; object-fit: cover;
+  border-radius: 4px; margin-bottom: 6px; border: 1px solid #24313b;
+}
+
+/* ---- HUD restyle: floating docks, darker + more transparent, rounded on
+   every side (they float over the full-screen map now). ---- */
+#topbar {
+  background: rgba(10, 13, 17, 0.55);
+  border: 1px solid #ffffff14;
+  border-radius: 12px;
+  backdrop-filter: blur(4px);
+}
+#bottomdock {
+  background: rgba(10, 13, 17, 0.55);
+  border: 1px solid #ffffff14;
+  border-radius: 12px;
+  backdrop-filter: blur(4px);
+  gap: 2px;
+}
+/* No per-stat card background — the numbers/icons sit straight on the dock. */
+.dockitem {
+  background: none;
+  border: none;
+  border-radius: 8px;
+}
+.dockitem.stat:hover { background: rgba(255, 255, 255, 0.06); }
+.dsub { font-size: 10px; color: #9fb5bd; display: flex; align-items: baseline; gap: 4px; }
+.dsub #statGDP { font-weight: 600; }
+/* Backgrounds are gone, so give dock text a little shadow for legibility. */
+#bottomdock .dlabel, #bottomdock .dval, #bottomdock .dsub { text-shadow: 0 1px 3px rgba(0,0,0,0.8); }
+
+#layerToggles {
+  background: rgba(10, 13, 17, 0.55);
+  border: 1px solid #ffffff14;
+  border-radius: 12px;
+  backdrop-filter: blur(4px);
+}
+#unitPanel, #cityPanel, #drawer, #insightBox, #eventModalBox,
+#transitBox, #pendingDecisions, #roadBuildBar, #policiesOverlayBox,
+#researchOverlayBox, #tradeMapBox, #modifierBar .modChip {
+  background: rgba(40, 45, 52, 0.88);
+  border-radius: 12px;
+  backdrop-filter: blur(3px);
+}
+#drawer { border-radius: 12px 0 0 12px; }
+
+/* ---- Layer toggles: click the NAME to show/hide (no checkbox). White text =
+   layer visible; dark text with a white outline = hidden. ---- */
+#layerToggles label input { display: none; }
+/* Disabled = the whole text AND its outline just a little bit darker (still
+   clearly readable); enabled = bright white with a brighter outline. */
+#layerToggles label {
+  color: #7d8b92; -webkit-text-stroke: 0.5px rgba(255, 255, 255, 0.35);
+  cursor: pointer; user-select: none; padding: 2px 0; transition: color .1s;
+}
+#layerToggles label:hover { color: #9fb0b8; }
+#layerToggles label:has(input:checked) {
+  color: #ffffff; -webkit-text-stroke: 0.5px rgba(255, 255, 255, 0.7);
+}
+/* Small road/rail thumbnail on the build buttons */
+.buildBtnImg {
+  width: 26px; height: 18px; object-fit: cover; border-radius: 3px;
+  margin-right: 7px; vertical-align: middle; border: 1px solid #ffffff22;
+}
+#layerToggles button { display: flex; align-items: center; }
+
+/* CITY PANEL: was flush to the bottom-left edge and its body could run off
+   the bottom of the screen (only the header/name visible). Anchored higher,
+   rounded, and the body is a proper scrolling flex child now. */
+#cityPanel {
+  left: 12px; bottom: 84px; max-height: calc(100% - 160px);
+  border: 1px solid #ffffff1a; overflow: hidden;
+}
+#cityPanelBody { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+
+/* Thick white outline on selected troops */
+.unit-icon.unit-selected {
+  background: #ffe08a;
+  border: 3px solid #ffffff;
+  box-shadow: 0 0 10px #ffffffcc;
+}
+.unit-training-ring.unit-selected {
+  border: 3px solid #ffffff;
+  box-shadow: 0 0 10px #ffffffcc;
+}
+
+/* ---- Inline SVG icons (svgIcon) ---- */
+.gi { width: 1.05em; height: 1.05em; vertical-align: -0.17em; display: inline-block; flex-shrink: 0; }
+.dlabel .gi { width: 12px; height: 12px; vertical-align: -0.12em; margin-right: 2px; opacity: 0.85; }
+.poi-icon .gi { width: 13px; height: 13px; vertical-align: middle; }
+.deposit-marker .gi { width: 13px; height: 13px; vertical-align: -0.2em; }
+.lawTitle .gi, .sectorTab .gi, .navbtn .gi { width: 14px; height: 14px; }
+.modChip .gi { width: 12px; height: 12px; vertical-align: -0.12em; }
+.pickFallback .gi { width: 26px; height: 26px; opacity: 0.7; }
+.udomain .gi { width: 12px; height: 12px; }
+
+/* WebGL satellite base map — a Leaflet layer in the tile pane (beneath overlays).
+   Positioned/sized by JS; transformed in sync with Leaflet's zoom animation. */
+.gl-basemap { position: absolute; left: 0; top: 0; pointer-events: none; }
+
+/* ===================== STARTUP INTRO ===================== */
+#startupIntro {
+  position: fixed; inset: 0; z-index: 6000; background: #000;
+  display: flex; align-items: center; justify-content: center;
+  opacity: 1; transition: opacity 0.7s ease;
+}
+#startupIntro.introHiding { opacity: 0; pointer-events: none; }
+#startupIntroVideo { width: 100%; height: 100%; object-fit: cover; background: #000; }
+
+/* ===================== MAIN MENU / LOADING SCREEN ===================== */
+#mainMenu {
+  position: fixed; inset: 0; z-index: 4000; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  background: #0a0f14;
+  opacity: 1; transition: opacity 0.5s ease;
+}
+#mainMenu.menuHiding { opacity: 0; pointer-events: none; }
+
+/* Blurred, gently drifting satellite view of Slovenia. */
+#menuMapBg {
+  position: absolute; inset: -8%; width: 116%; height: 116%;
+  filter: blur(7px) brightness(0.55) saturate(1.1);
+  transform: scale(1.05);
+  animation: menuDrift 60s ease-in-out infinite alternate;
+  background: #12202b;
+}
+@keyframes menuDrift {
+  from { transform: scale(1.05) translate(0, 0); }
+  to   { transform: scale(1.14) translate(-2%, -1.5%); }
+}
+/* Full-bleed menu video backdrop (any videos/ file named *MAINMENU*). */
+#menuVideoBg {
+  position: absolute; inset: 0; z-index: 0;
+  width: 100%; height: 100%; object-fit: cover;
+  background: #0a0f14; pointer-events: none;
+}
+/* Cinematic vignette that darkens the edges around the video. */
+#menuVignette {
+  position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  background: radial-gradient(125% 105% at 50% 45%, rgba(0,0,0,0) 38%, rgba(0,0,0,0.45) 74%, rgba(0,0,0,0.88) 100%);
+  box-shadow: inset 0 0 200px 70px rgba(0,0,0,0.75);
+}
+#menuScrim {
+  position: absolute; inset: 0; z-index: 1;
+  background:
+    radial-gradient(120% 90% at 50% 30%, rgba(10,15,20,0.05) 0%, rgba(10,15,20,0.32) 60%, rgba(6,10,14,0.6) 100%),
+    linear-gradient(180deg, rgba(8,12,17,0.35) 0%, rgba(8,12,17,0.1) 40%, rgba(6,10,14,0.6) 100%);
+}
+
+#menuContent {
+  position: relative; z-index: 2; text-align: center;
+  padding: 30px; max-width: 560px; width: 92%;
+  animation: menuRise 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes menuRise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+
+/* Slovenia tricolour crest. */
+.menuFlag {
+  display: inline-flex; flex-direction: column; width: 46px; height: 32px;
+  border-radius: 3px; overflow: hidden; border: 1px solid rgba(255,255,255,0.35);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.5);
+}
+.menuFlag i { flex: 1; display: block; }
+.menuFlag i:nth-child(1) { background: #ffffff; }
+.menuFlag i:nth-child(2) { background: #0b4ea2; }
+.menuFlag i:nth-child(3) { background: #d52b1e; }
+.menuFlag.sm { width: 20px; height: 14px; border-radius: 2px; vertical-align: -0.2em; }
+#menuCrest { margin-bottom: 18px; }
+
+#menuTitle {
+  margin: 0; font-size: 52px; font-weight: 800; letter-spacing: 6px;
+  color: #eef6fb; text-shadow: 0 3px 24px rgba(0,0,0,0.7); line-height: 1;
+}
+#menuTitle span { color: #7fc3ff; }
+/* Game logo above the menu buttons (assets/logo.png). */
+#menuLogo {
+  display: block; width: min(420px, 82%); height: auto; margin: 0 auto 6px;
+  filter: drop-shadow(0 6px 26px rgba(0,0,0,0.65));
+  animation: menuLogoIn 0.9s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes menuLogoIn { from { opacity: 0; transform: translateY(-10px) scale(0.98); } to { opacity: 1; transform: none; } }
+#menuSubtitle { margin: 4px 0 30px; font-size: 14px; letter-spacing: 1.5px; color: #a8bcc7; text-transform: uppercase; }
+
+#menuButtons { display: flex; flex-direction: column; gap: 12px; align-items: stretch; }
+/* Liquid-glass buttons: transparent frosted background, no border at rest —
+   a crisp outline fades in only on hover. */
+.menuBtn {
+  position: relative; display: flex; flex-direction: column; gap: 3px; align-items: flex-start;
+  padding: 15px 22px; border-radius: 12px; cursor: pointer; text-align: left;
+  background: transparent;
+  -webkit-backdrop-filter: blur(10px) saturate(1.25);
+  backdrop-filter: blur(10px) saturate(1.25);
+  border: 1px solid rgba(255,255,255,0.12);
+  color: #f2f8fc;
+  transition: transform 0.14s ease, background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+  font-family: inherit;
+}
+.menuBtn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  border-color: rgba(255,255,255,0.85);
+  background: rgba(255,255,255,0.08);
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.35), 0 10px 28px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.25);
+}
+.menuBtn:active:not(:disabled) { transform: translateY(0); }
+.menuBtn:disabled { opacity: 0.4; cursor: default; }
+.menuBtn .mbTitle {
+  font-size: 18px; font-weight: 700; letter-spacing: 0.5px;
+  color: rgba(255,255,255,0.96);
+  text-shadow: 0 1px 2px rgba(0,0,0,0.55), 0 0 18px rgba(255,255,255,0.18);
+}
+.menuBtn .mbSub { font-size: 12px; color: rgba(226,240,248,0.72); font-weight: 400; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
+/* The alt (Settings) button shares the same glass treatment. */
+.menuBtnAlt { background: transparent; border-color: rgba(255,255,255,0.1); color: #eef4f9; }
+.menuBtnAlt:hover:not(:disabled) { border-color: rgba(255,255,255,0.8); background: rgba(255,255,255,0.07); }
+.menuBtnAlt .mbSub { color: rgba(220,232,240,0.66); }
+/* Quit button — same glass, but a red outline/glow on hover. */
+.menuBtnQuit:hover:not(:disabled) {
+  border-color: rgba(255,120,110,0.9);
+  background: rgba(210,60,50,0.12);
+  box-shadow: 0 0 0 1px rgba(255,120,110,0.4), 0 10px 28px rgba(0,0,0,0.5);
+}
+.menuBtnQuit:hover:not(:disabled) .mbTitle { color: #ffd9d4; }
+
+#menuLoading { margin-top: 26px; font-size: 12.5px; color: #9fb3c0; letter-spacing: 0.5px; display: flex; align-items: center; justify-content: center; gap: 8px; }
+#menuLoading.ready { color: #8fe0c4; }
+#menuLoading.ready .menuSpinner { display: none; }
+.menuSpinner { width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.25); border-top-color: #7fc3ff; border-radius: 50%; animation: menuSpin 0.8s linear infinite; }
+@keyframes menuSpin { to { transform: rotate(360deg); } }
+#menuFooter { margin-top: 18px; font-size: 11px; color: #64778350; color: rgba(140,160,175,0.5); letter-spacing: 1px; }
+
+/* ---- Settings panel ---- (top-level overlay; no backdrop-filter so it opens
+   instantly instead of stalling on a full-page blur composite) */
+#menuSettings { position: fixed; inset: 0; z-index: 4500; display: flex; align-items: center; justify-content: center; background: rgba(6,10,14,0.62); }
+#menuSettings.hidden { display: none; }
+.msBox { width: 420px; max-width: 92%; background: #0e161d; border: 1px solid #24333d; border-radius: 10px; box-shadow: 0 20px 60px rgba(0,0,0,0.6); overflow: hidden; animation: menuRise 0.12s ease both; }
+.msHead { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px; border-bottom: 1px solid #1e2a33; font-size: 17px; font-weight: 700; color: #e6f1f7; }
+.msHead button { background: none; border: none; color: #8ba0ad; font-size: 18px; cursor: pointer; }
+.msHead button:hover { color: #fff; }
+.msRow { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 15px 18px; border-bottom: 1px solid #16212a; }
+.msLabel { display: flex; flex-direction: column; gap: 2px; }
+.msLabel b { font-size: 14px; color: #dbe8f0; font-weight: 600; }
+.msLabel span { font-size: 11.5px; color: #7d94a1; }
+.msToggle { position: relative; width: 46px; height: 26px; border-radius: 13px; background: #26333d; border: 1px solid #33444f; cursor: pointer; flex-shrink: 0; transition: background 0.18s ease, border-color 0.18s ease; }
+.msToggle .msKnob { position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%; background: #8ba0ad; transition: transform 0.18s ease, background 0.18s ease; }
+.msToggle.on { background: #1c6f57; border-color: #2f9f7c; }
+.msToggle.on .msKnob { transform: translateX(20px); background: #9fe8d0; }
+.msSlider { width: 160px; accent-color: #2f9f7c; }
+.msHint { padding: 12px 18px; font-size: 11px; color: #6f8791; }
+.msDone { display: block; width: calc(100% - 36px); margin: 0 18px 18px; padding: 11px; border-radius: 7px; background: #1c3a34; border: 1px solid #2f6f5f; color: #9fe8d0; font-size: 14px; font-weight: 600; cursor: pointer; font-family: inherit; }
+.msDone:hover { filter: brightness(1.15); }
+.msBtnSm { flex-shrink: 0; padding: 7px 14px; border-radius: 6px; background: #1c3a34; border: 1px solid #2f6f5f; color: #9fe8d0; font-size: 12.5px; font-weight: 600; cursor: pointer; font-family: inherit; }
+.msBtnSm:hover:not(:disabled) { filter: brightness(1.15); }
+.msBtnSm:disabled { opacity: 0.6; cursor: default; }
+.msProgRow { display: flex; align-items: center; gap: 10px; padding: 0 18px 14px; }
+.msProgRow.hidden { display: none; }
+.msProgTrack { flex: 1; height: 8px; background: #16212a; border-radius: 5px; overflow: hidden; }
+.msProgFill { height: 100%; width: 0%; background: linear-gradient(90deg, #2f9f7c, #7fe0c9); transition: width 0.3s ease; }
+#offlineProgTxt { font-size: 11px; color: #8ba1ab; min-width: 92px; text-align: right; }
+
+/* ---- In-game ESC pause menu ---- */
+#pauseMenu { position: fixed; inset: 0; z-index: 4200; display: flex; align-items: center; justify-content: center; background: rgba(6,10,14,0.35); }
+#pauseMenu.hidden { display: none; }
+.pmBox {
+  display: flex; flex-direction: column; gap: 10px; width: 300px; max-width: 88%;
+  padding: 26px; border-radius: 12px; text-align: center;
+  background: rgba(14,22,29,0.92); border: 1px solid #24333d;
+  box-shadow: 0 24px 70px rgba(0,0,0,0.65); animation: menuRise 0.14s ease both;
+}
+.pmTitle { font-size: 22px; font-weight: 800; letter-spacing: 5px; color: #cfe0ea; margin-bottom: 12px; }
+.pmBtn {
+  padding: 13px; border-radius: 8px; cursor: pointer; font-family: inherit;
+  font-size: 15px; font-weight: 600; color: #dbe8f0;
+  background: linear-gradient(180deg, rgba(30,44,58,0.95), rgba(18,27,36,0.95));
+  border: 1px solid #2f4757; transition: transform 0.1s ease, filter 0.12s ease, border-color 0.12s ease;
+}
+.pmBtn:hover { transform: translateY(-1px); filter: brightness(1.12); border-color: #4a6577; }
+.pmBtn:active { transform: none; }
+.pmQuit { margin-top: 8px; background: linear-gradient(180deg, rgba(74,34,30,0.95), rgba(44,20,18,0.95)); border-color: #7a3a32; color: #ffc7be; }
+.pmQuit:hover { border-color: #b0524a; }
+
+/* Multiplayer room code shown in the pause menu. */
+#pmMpCode { margin-bottom: 8px; padding: 12px; border-radius: 10px; background: rgba(20,42,54,0.6); border: 1px solid #23515f; }
+#pmMpCode.hidden { display: none; }
+.pmMpLabel { font-size: 10px; letter-spacing: 2px; color: #7fc3ff; margin-bottom: 6px; }
+.pmMpCodeRow { display: flex; align-items: center; gap: 8px; justify-content: center; }
+.pmMpCodeRow code { font-size: 18px; font-weight: 800; letter-spacing: 2px; color: #eaf6ff; word-break: break-all; }
+.pmMpSub { font-size: 11px; color: #9fb3c0; margin-top: 6px; }
+
+/* ---- Multiplayer lobby ---- */
+#mpLobby { position: fixed; inset: 0; z-index: 4600; display: flex; align-items: center; justify-content: center; background: rgba(6,10,14,0.66); }
+#mpLobby.hidden { display: none; }
+.mpBox {
+  width: 460px; max-width: 92%; padding: 0 0 22px; border-radius: 14px; overflow: hidden;
+  background: rgba(14,22,29,0.97); border: 1px solid #24333d; box-shadow: 0 26px 80px rgba(0,0,0,0.7);
+  animation: menuRise 0.16s ease both;
+}
+.mpHead { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid #1e2c35; font-weight: 800; letter-spacing: 3px; color: #cfe0ea; font-size: 14px; }
+.mpHead button { background: none; border: none; color: #8ba0ad; font-size: 18px; cursor: pointer; }
+.mpHead button:hover { color: #eaf6ff; }
+.mpView { padding: 20px; display: flex; flex-direction: column; gap: 12px; }
+.mpView.hidden { display: none; }
+.mpIntro { margin: 0 0 4px; font-size: 13px; color: #a8bcc7; line-height: 1.5; }
+.mpBigBtn {
+  display: flex; flex-direction: column; gap: 3px; align-items: flex-start; text-align: left;
+  padding: 15px 18px; border-radius: 10px; cursor: pointer; font-family: inherit;
+  background: linear-gradient(180deg, rgba(28,58,52,0.5), rgba(18,38,34,0.5));
+  border: 1px solid #2f6f5f; color: #dff3ea; transition: transform 0.12s ease, border-color 0.15s ease, background 0.15s ease;
+}
+.mpBigBtn:hover { transform: translateY(-2px); border-color: #48b295; background: linear-gradient(180deg, rgba(36,74,66,0.7), rgba(22,48,42,0.7)); }
+.mpBigTitle { font-size: 17px; font-weight: 700; }
+.mpBigSub { font-size: 12px; color: #a9cabf; }
+.mpLabel { font-size: 11px; letter-spacing: 2px; color: #7fc3ff; }
+.mpCodeRow { display: flex; align-items: center; gap: 10px; }
+.mpCodeRow code { flex: 1; font-size: 22px; font-weight: 800; letter-spacing: 2px; color: #eaf6ff; padding: 12px 14px; border-radius: 8px; background: rgba(20,42,54,0.7); border: 1px solid #23515f; word-break: break-all; }
+.mpHint { margin: 0; font-size: 12px; color: #9fb3c0; line-height: 1.5; }
+.mpHint b { color: #cfe0ea; }
+.mpInput { padding: 12px 14px; border-radius: 8px; font-size: 15px; font-family: inherit; letter-spacing: 1px; color: #eaf6ff; background: rgba(10,18,24,0.9); border: 1px solid #2f4757; }
+.mpInput:focus { outline: none; border-color: #48b295; }
+.mpActions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
+.mpSmBtn { padding: 9px 16px; border-radius: 8px; cursor: pointer; font-family: inherit; font-size: 13px; font-weight: 600; color: #dbe8f0; background: rgba(30,44,58,0.9); border: 1px solid #2f4757; }
+.mpSmBtn:hover { border-color: #4a6577; filter: brightness(1.1); }
+.mpSmBtn.primary { background: linear-gradient(180deg, rgba(36,74,66,0.95), rgba(22,48,42,0.95)); border-color: #2f6f5f; color: #dff3ea; }
+.mpSmBtn.primary:hover { border-color: #48b295; }
+.mpSmBtn.ghost { background: transparent; }
+
+/* Static GPU blur applied to the game while the pause menu is open. Cheap
+   because the sim is paused, so nothing behind it is repainting. */
+#app.blurred { filter: blur(6px) brightness(0.8); pointer-events: none; }
+
+@media (max-width: 560px) {
+  #menuTitle { font-size: 38px; letter-spacing: 3px; }
+}

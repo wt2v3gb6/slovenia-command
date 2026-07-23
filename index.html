@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>SLOVENIA COMMAND — Prototype</title>
+<!-- No Leaflet anywhere in the game: the map is WebGLTileMap (js/webgl-map.js)
+     and the Trade tab's world choropleth is TradeWorldMap (js/trademap.js). -->
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- ===== STARTUP INTRO (plays videos/STARTUPINTRO.mp4 before the menu) ===== -->
+<div id="startupIntro">
+  <video id="startupIntroVideo" playsinline preload="auto"></video>
+</div>
+
+<!-- ===== MAIN MENU / LOADING SCREEN ===== -->
+<div id="mainMenu">
+  <div id="menuMapBg"><canvas id="menuMapCanvas"></canvas></div>
+  <video id="menuVideoBg" muted loop playsinline autoplay preload="auto"></video>
+  <div id="menuVignette"></div>
+  <div id="menuScrim"></div>
+  <div id="menuContent">
+    <img id="menuLogo" src="assets/logo.png" alt="Slovenia Command" />
+    <p id="menuSubtitle">Take command of the Republic of Slovenia</p>
+    <div id="menuButtons">
+      <button class="menuBtn" id="btnSingle" disabled>
+        <span class="mbTitle">Play Singleplayer</span>
+        <span class="mbSub">Command Slovenia solo</span>
+      </button>
+      <button class="menuBtn" id="btnMulti" disabled>
+        <span class="mbTitle">Play Multiplayer</span>
+        <span class="mbSub">Co-op — two players, one Slovenia (shared screen)</span>
+      </button>
+      <button class="menuBtn menuBtnAlt" id="btnSettings">
+        <span class="mbTitle">Settings</span>
+        <span class="mbSub">Fullscreen, sound &amp; more</span>
+      </button>
+      <button class="menuBtn menuBtnAlt menuBtnQuit" id="btnQuit">
+        <span class="mbTitle">Quit Game</span>
+        <span class="mbSub">Close Slovenia Command</span>
+      </button>
+    </div>
+    <div id="menuLoading"><span class="menuSpinner"></span> Loading terrain, roads &amp; borders…</div>
+    <div id="menuFooter">v1.0 · WebGL Satellite Map Engine</div>
+  </div>
+</div>
+
+<!-- Settings panel — a top-level overlay so it's reachable from BOTH the main
+     menu and the in-game ESC pause menu. -->
+<div id="menuSettings" class="hidden">
+  <div class="msBox">
+    <div class="msHead"><span>Settings</span><button id="msClose">✕</button></div>
+    <div class="msRow">
+      <div class="msLabel"><b>Fullscreen</b><span>Fill the whole screen</span></div>
+      <button class="msToggle" id="setFullscreen" role="switch" aria-checked="false"><span class="msKnob"></span></button>
+    </div>
+    <div class="msRow">
+      <div class="msLabel"><b>Sound effects</b><span>Clicks, orders, construction</span></div>
+      <button class="msToggle on" id="setSound" role="switch" aria-checked="true"><span class="msKnob"></span></button>
+    </div>
+    <div class="msRow">
+      <div class="msLabel"><b>Menu music</b><span>“Polje Boja” theme on the main menu</span></div>
+      <button class="msToggle on" id="setMenuMusic" role="switch" aria-checked="true"><span class="msKnob"></span></button>
+    </div>
+    <div class="msRow">
+      <div class="msLabel"><b>Volume</b><span id="setVolVal">55%</span></div>
+      <input type="range" id="setVolume" class="msSlider" min="0" max="100" step="5" value="55">
+    </div>
+    <div class="msRow">
+      <div class="msLabel"><b>Show satellite hillshade</b><span>Terrain relief shading on the map</span></div>
+      <button class="msToggle" id="setHillshade" role="switch" aria-checked="false"><span class="msKnob"></span></button>
+    </div>
+    <div class="msRow">
+      <div class="msLabel"><b>NATO unit symbols</b><span>Use APP-6 military symbols instead of round unit counters</span></div>
+      <button class="msToggle" id="setNatoSymbols" role="switch" aria-checked="false"><span class="msKnob"></span></button>
+    </div>
+    <div class="msRow">
+      <div class="msLabel"><b>Offline map</b><span id="offlineStatus">Pre-download Slovenia + surroundings (~250 MB) so the game works with no internet</span></div>
+      <button class="msBtnSm" id="setDownloadMap">Download</button>
+    </div>
+    <div id="offlineProg" class="msProgRow hidden">
+      <div class="msProgTrack"><div class="msProgFill" id="offlineProgFill"></div></div>
+      <span id="offlineProgTxt">0%</span>
+    </div>
+    <div class="msRow">
+      <div class="msLabel"><b>WebGL map engine <span style="color:#7fe0c9">(active)</span></b><span>GPU satellite renderer &amp; benchmark</span></div>
+      <button class="msBtnSm" id="setOpenGLMap">Benchmark</button>
+    </div>
+    <div class="msHint">Settings are saved on this device and apply immediately.</div>
+    <button class="msDone" id="msDone">Done</button>
+  </div>
+</div>
+
+<!-- ===== MULTIPLAYER LOBBY (co-op host / join) ===== -->
+<div id="mpLobby" class="hidden">
+  <div class="mpBox">
+    <div class="mpHead"><span>MULTIPLAYER · CO‑OP</span><button id="mpClose">✕</button></div>
+
+    <div id="mpChoice" class="mpView">
+      <p class="mpIntro">Play the same Slovenia together. One player hosts; friends join with a code.</p>
+      <button class="mpBigBtn" id="mpHostBtn">
+        <span class="mpBigTitle">Host a game</span>
+        <span class="mpBigSub">Run the session and get a room code to share</span>
+      </button>
+      <button class="mpBigBtn" id="mpJoinBtn">
+        <span class="mpBigTitle">Join a game</span>
+        <span class="mpBigSub">Enter a friend's room code to play together</span>
+      </button>
+    </div>
+
+    <div id="mpHostView" class="mpView hidden">
+      <div class="mpLabel">Your room code</div>
+      <div class="mpCodeRow">
+        <code id="mpCodeText">…</code>
+        <button id="mpCopyCode" class="mpSmBtn">Copy</button>
+      </div>
+      <p id="mpHostHint" class="mpHint">Preparing…</p>
+      <div class="mpActions">
+        <button id="mpHostBack" class="mpSmBtn ghost">Back</button>
+        <button id="mpEnterAsHost" class="mpSmBtn primary">Enter game</button>
+      </div>
+    </div>
+
+    <div id="mpJoinView" class="mpView hidden">
+      <div class="mpLabel">Room code</div>
+      <input id="mpJoinCode" class="mpInput" placeholder="Paste the code your friend sent" autocomplete="off" spellcheck="false" />
+      <p id="mpJoinStatus" class="mpHint"></p>
+      <div class="mpActions">
+        <button id="mpJoinBack" class="mpSmBtn ghost">Back</button>
+        <button id="mpConnect" class="mpSmBtn primary">Connect</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- In-game ESC pause menu -->
+<div id="pauseMenu" class="hidden">
+  <div class="pmBox">
+    <div class="pmTitle">PAUSED</div>
+    <div id="pmMpCode" class="hidden">
+      <div class="pmMpLabel">MULTIPLAYER ROOM CODE</div>
+      <div class="pmMpCodeRow"><code id="pmMpCodeText">—</code><button id="pmMpCopy" class="mpSmBtn">Copy</button></div>
+      <div id="pmMpCodeSub" class="pmMpSub"></div>
+    </div>
+    <button class="pmBtn" id="pmResume">Resume</button>
+    <button class="pmBtn" id="pmSettings">Settings</button>
+    <button class="pmBtn" id="pmMenu">Return to Main Menu</button>
+    <button class="pmBtn pmQuit" id="pmQuit">Quit Game</button>
+  </div>
+</div>
+
+<div id="app">
+
+  <!-- TOP BAR -->
+  <div id="topbar">
+    <div id="navButtons">
+      <button class="navbtn" data-tab="trade"><svg class="navicon" viewBox="0 0 24 24"><path d="M3 6h18M6 6v13a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V6M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M9 11h6M9 15h6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg> TRADE</button>
+      <button class="navbtn" data-tab="research"><svg class="navicon" viewBox="0 0 24 24"><path d="M9 2v6L3.5 18a2 2 0 0 0 1.8 3h13.4a2 2 0 0 0 1.8-3L15 8V2 M9 2h6 M7 15h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg> RESEARCH</button>
+      <button class="navbtn" data-tab="log"><svg class="navicon" viewBox="0 0 24 24"><path d="M6 3h9l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z M14 3v5h5 M8 12h8 M8 16h8 M8 8h3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg> LOG</button>
+      <button class="navbtn" data-tab="policies"><svg class="navicon" viewBox="0 0 24 24"><path d="M12 3 3 8h18L12 3Z M5 8v9 M9.5 8v9 M14.5 8v9 M19 8v9 M3 20h18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg> POLICIES</button>
+    </div>
+
+    <div id="clockCenter">
+      <div id="clockDateRow">
+        <span id="clockDate">-- --- ----</span>
+        <span id="clockTime">00:00</span>
+      </div>
+      <div id="speedControls"></div>
+    </div>
+
+    <div id="alertBell"><span data-icon="bell"></span> <span id="alertCount">0</span></div>
+  </div>
+
+  <!-- ACTIVE MODIFIERS (buffs/debuffs from events, war exhaustion, corruption) -->
+  <div id="modifierBar" class="hidden"></div>
+
+  <!-- INSIGHT PANEL (click a stat to open) -->
+  <div id="insightModal" class="hidden">
+    <div id="insightBox">
+      <div id="insightHead"><span id="insightTitle"></span><button id="insightClose">✕</button></div>
+      <div id="insightBody"></div>
+    </div>
+  </div>
+
+  <!-- MAP -->
+  <div id="mapwrap">
+    <canvas id="mapcanvas"></canvas>
+    <canvas id="overlaycanvas"></canvas>
+    <div id="mapPopup" class="hidden"></div>
+    <div id="warBanner" class="hidden"></div>
+    <div id="roadBuildBar" class="hidden">
+      <div id="roadTypePicker"></div>
+      <span id="roadBuildLabel">Drawing route…</span>
+      <span id="roadBuildCost"></span>
+      <button id="roadBuildConfirm">CONFIRM</button>
+      <button id="roadBuildCancel">CANCEL</button>
+    </div>
+  </div>
+
+  <!-- SELECTED UNIT PANEL -->
+  <div id="unitPanel" class="hidden">
+    <div id="unitPanelHead">SELECTED UNIT</div>
+    <div id="selectedUnitBox">No unit selected.</div>
+  </div>
+
+  <!-- MAP LAYER TOGGLES -->
+  <div id="layerToggles">
+    <div class="toggleGroup">MAP</div>
+    <label><input type="checkbox" id="toggleRoads" checked> Roads</label>
+    <label><input type="checkbox" id="toggleRail" checked> Railways</label>
+    <label><input type="checkbox" id="toggleBorders" checked> Borders</label>
+    <label><input type="checkbox" id="toggleMunicipalities" checked> Municipalities</label>
+    <label><input type="checkbox" id="toggleLabels" checked> City Names</label>
+    <label><input type="checkbox" id="toggleRivers"> Rivers / Lakes</label>
+    <label><input type="checkbox" id="toggleUrban"> Urban Areas</label>
+    <label><input type="checkbox" id="toggleRelief"> Relief (hills &amp; mountains)</label>
+
+    <div class="toggleGroup">MILITARY</div>
+    <label><input type="checkbox" id="toggleUnits" checked> Military Units</label>
+    <label><input type="checkbox" id="toggleMilitaryBases"> Bases &amp; FOBs</label>
+    <label><input type="checkbox" id="toggleSupplyRange"> Supply Range</label>
+
+    <div class="toggleGroup">OTHER</div>
+    <label><input type="checkbox" id="togglePOI"> Airports / Ports</label>
+    <label><input type="checkbox" id="toggleResources"> <span data-icon="mines"></span> Resource Deposits</label>
+    <div class="toggleDivider"></div>
+    <button id="buildRoadModeBtn">+ Build Road</button>
+    <button id="buildRailModeBtn">+ Build Railway</button>
+  </div>
+
+  <!-- CITY INFO PANEL -->
+  <div id="cityPanel" class="hidden">
+    <div id="cityPanelHead">
+      <span id="cityPanelTitle">CITY</span>
+      <button id="cityPanelClose">✕</button>
+    </div>
+    <div id="cityPanelBody"></div>
+  </div>
+
+  <!-- DRAWER PANEL -->
+  <div id="drawer" class="hidden">
+    <div id="drawerHead">
+      <span id="drawerTitle">PANEL</span>
+      <button id="drawerClose">✕</button>
+    </div>
+    <div id="drawerBody">
+
+      <div class="tabpane" id="tab-diplomacy">
+        <div id="diplomacyList"></div>
+      </div>
+
+      <div class="tabpane" id="tab-log">
+        <div id="eventLog"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- BOTTOM STAT DOCK -->
+  <div id="bottomdock">
+    <div class="dockitem stat" data-tip="stability"><div class="dlabel" data-icon="stability">STABILITY</div><div class="dval"><span id="statStability">--%</span><span class="trendArrow" id="trendStability"></span></div></div>
+    <div class="dockitem stat" data-tip="happiness"><div class="dlabel" data-icon="happiness">HAPPINESS</div><div class="dval"><span id="statHappiness">--%</span><span class="trendArrow" id="trendHappiness"></span></div></div>
+    <div class="dockitem stat" data-tip="treasury"><div class="dlabel" data-icon="treasury">TREASURY · GDP</div><div class="dval"><span id="statTreasury">€0</span><span class="trendArrow" id="trendTreasury"></span></div><div class="dsub">GDP <span id="statGDP">€0</span><span class="trendArrow" id="trendGdp"></span></div></div>
+    <div class="dockitem stat" data-tip="population"><div class="dlabel" data-icon="population">POPULATION</div><div class="dval"><span id="statPopulation">0</span><span class="trendArrow" id="trendPopulation"></span></div></div>
+    <div class="dockitem stat" data-tip="manpower"><div class="dlabel" data-icon="manpower">MANPOWER</div><div class="dval"><span id="statManpower">0</span><span class="trendArrow" id="trendManpower"></span></div></div>
+    <div class="dockitem stat" data-tip="hdi"><div class="dlabel" data-icon="hdi">HDI</div><div class="dval"><span id="statHDI">--</span></div></div>
+    <div class="dockitem stat" data-tip="unemployment"><div class="dlabel" data-icon="unemployment">UNEMPLOY.</div><div class="dval"><span id="statUnemployment">--%</span></div></div>
+  </div>
+
+  <!-- EVENT MODAL -->
+  <div id="eventModal" class="hidden">
+    <div id="eventModalBox">
+      <div id="eventModalTitle"></div>
+      <div id="eventModalDeadline"></div>
+      <div id="eventModalBody"></div>
+      <div id="eventModalChoices"></div>
+      <div id="eventModalFooter">
+        <button id="eventModalExperts"></button>
+        <button id="eventModalPostpone">Decide later</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TRANSIT REQUEST MODAL (crossing foreign territory) -->
+  <div id="transitModal" class="hidden">
+    <div id="transitBox">
+      <div id="transitTitle"></div>
+      <div id="transitBody"></div>
+      <div id="transitChoices"></div>
+    </div>
+  </div>
+
+  <!-- PENDING DECISIONS TRAY -->
+  <div id="pendingDecisions" class="hidden"></div>
+
+  <!-- WORLD TRADE MAP OVERLAY -->
+  <div id="tradeMapOverlay" class="hidden">
+    <div id="tradeMapBox">
+      <div id="tradeMapHead">
+        <span><span data-icon="map"></span> WORLD TRADE — <select id="tradeMapResSel"></select> availability</span>
+        <button id="tradeMapClose">✕</button>
+      </div>
+      <div id="tradeMapBody">
+        <div id="tradeMapCanvas"></div>
+        <div id="tradeMapSide">
+          <div id="tradeCountryPanel" class="hidden"></div>
+          <div id="tradeListWrap">
+            <div class="tmHint">Click a highlighted country on the map to trade with it, or manage your stocks below.</div>
+            <div id="tradeList"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- POLICIES OVERLAY (laws + ideology compass) -->
+  <div id="policiesOverlay" class="hidden">
+    <div id="policiesOverlayBox">
+      <div id="policiesOverlayHead">
+        <span><span data-icon="bank"></span> POLICIES</span>
+        <div id="policiesTabs">
+          <button id="pTabLaws" class="ptab active"><span data-icon="scales"></span> LAWS</button>
+          <button id="pTabIdeology" class="ptab"><span data-icon="compass"></span> IDEOLOGY</button>
+        </div>
+        <button id="policiesOverlayClose">✕</button>
+      </div>
+      <div id="policiesBody">
+        <div id="policiesLawsPane"></div>
+        <div id="policiesIdeologyPane" class="hidden"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RESEARCH OVERLAY (full-screen branching tech tree) -->
+  <div id="researchOverlay" class="hidden">
+    <div id="researchOverlayBox">
+      <div id="researchOverlayHead">
+        <span><span data-icon="research"></span> RESEARCH — pick up to 3 technologies to research</span>
+        <button id="researchOverlayClose">✕</button>
+      </div>
+      <div id="researchQueueBar"></div>
+      <div id="researchTreeArea"></div>
+    </div>
+  </div>
+
+</div>
+
+<script src="js/icons.js"></script>
+<script src="js/sounds.js"></script>
+<script src="js/data.js"></script>
+<script src="js/techtree.js"></script>
+<script src="js/geo.js"></script>
+<script src="js/state.js"></script>
+<script src="js/laws.js"></script>
+<script src="js/modifiers.js"></script>
+<script src="js/economy.js"></script>
+<script src="js/webgl-map.js"></script>
+<script src="js/map.js"></script>
+<script src="js/units.js"></script>
+<script src="js/events.js"></script>
+<script src="js/diplomacy.js"></script>
+<script src="js/trademap.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/multiplayer.js"></script>
+<script src="js/menu.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>

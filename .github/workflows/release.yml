@@ -1,0 +1,34 @@
+name: Build & Release
+
+# Builds the Windows installer in the cloud and publishes it to a GitHub
+# Release whenever you push a version tag (e.g. `git tag v1.0.1 && git push --tags`).
+# electron-updater in the installed game then auto-updates every copy from here.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}   # also allows a manual run from the Actions tab
+
+permissions:
+  contents: write          # needed to create the Release and upload the installer
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Build installer & publish to GitHub Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run publish

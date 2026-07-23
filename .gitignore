@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Local tile cache (satellite imagery downloaded at runtime)
+.tilecache/
+
+# Logs & scratch
+*.log
+_c.js
+app.exe.cmd
+
+# OS junk
+.DS_Store
+Thumbs.db

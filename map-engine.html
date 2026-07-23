@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+<title>WebGL Satellite Map Engine — Europe (offline)</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #05080b; font-family: system-ui, sans-serif; }
+  #glmap { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; cursor: grab; }
+  #glmap:active { cursor: grabbing; }
+  #hud {
+    position: fixed; top: 12px; left: 12px; z-index: 10; color: #cfe3e8;
+    background: rgba(10,15,20,0.72); border: 1px solid #24313b; border-radius: 8px;
+    padding: 10px 12px; font-size: 12px; line-height: 1.7; min-width: 210px; backdrop-filter: blur(4px);
+  }
+  #hud b { color: #7fe0c9; }
+  #hud .fps { font-size: 20px; font-weight: 700; }
+  #hud .fps.good { color: #7fe0a0; } #hud .fps.warn { color: #e0c97f; } #hud .fps.bad { color: #e08f7f; }
+  #hud .row { display: flex; justify-content: space-between; gap: 14px; }
+  #jump { position: fixed; bottom: 12px; left: 12px; z-index: 10; display: flex; gap: 6px; flex-wrap: wrap; max-width: 60vw; }
+  #jump button {
+    background: rgba(14,22,29,0.82); border: 1px solid #2a3a44; color: #a9c3cb;
+    border-radius: 6px; padding: 6px 10px; font-size: 12px; cursor: pointer;
+  }
+  #jump button:hover { border-color: #7fb0e0; color: #cfe3e8; }
+  #tip { position: fixed; bottom: 12px; right: 12px; z-index: 10; color: #6f8791; font-size: 11px; text-align: right; }
+</style>
+</head>
+<body>
+<canvas id="glmap"></canvas>
+</div>
+<div id="jump">
+</div>
+
+<script src="js/webgl-map.js"></script>
+<script>
+  const canvas = document.getElementById("glmap");
+  let map;
+  try {
+    map = new WebGLTileMap(canvas, { center: [46.05, 14.5], zoom: 8, minZoom: 2, maxNativeZoom: 19, maxZoom: 21 });
+  } catch (err) {
+    document.body.insertAdjacentHTML("beforeend",
+      '<div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#e08f7f;background:#0a0f14;font-family:system-ui;font-size:15px;text-align:center;padding:24px;z-index:100">' +
+      "WebGL map engine couldn't start:<br><b>" + (err && err.message || err) + "</b><br><br>" +
+      '<a href="index.html" style="color:#7fb0e0">← Back to game</a></div>');
+    throw err;
+  }
+
+  document.querySelectorAll("#jump button[data-lat]").forEach((b) => {
+    b.addEventListener("click", () => map.flyTo(+b.dataset.lat, +b.dataset.lon, +b.dataset.z));
+  });
+</script>
+</body>
+</html>
