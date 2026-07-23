@@ -1,6 +1,6 @@
 {
   "name": "slovenia-command",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "productName": "Slovenia Command",
   "description": "Slovenia Command — a strategy game set in Slovenia",
   "author": "Slovenia Command",
@@ -45,7 +45,8 @@
       {
         "provider": "github",
         "owner": "wt2v3gb6",
-        "repo": "slovenia-command"
+        "repo": "slovenia-command",
+        "releaseType": "release"
       }
     ]
   }
