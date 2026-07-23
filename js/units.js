@@ -32,7 +32,7 @@ function cityDeployDays(cityId) {
 
 // Best replenishment rate available at a point (units near a base/FOB heal
 // and re-arm; a full base restores faster than an austere FOB).
-function replenishRateAt(lat, lon) {
+function replenishRateAt(lat, lon, excludeId) {
   let rate = 0;
   // Same fix as groundSupplySourceKm: a barracks services the ground it stands
   // on, which isn't always its home city's centre.
@@ -45,7 +45,30 @@ function replenishRateAt(lat, lon) {
     const def = BUILDING_TYPES[b.type];
     if (def && def.replenish && b.lat != null && haversineKm(lat, lon, b.lat, b.lon) < 4) rate = Math.max(rate, def.replenish);
   });
+  // Mobile supply companies act as a moving base within their supply range.
+  (state.units || []).forEach(s => {
+    if (s.id === excludeId) return;
+    const def = UNIT_TYPES[s.type];
+    if (def && def.isSupply && def.replenish && (s.trainingDaysLeft || 0) <= 0 &&
+        haversineKm(lat, lon, s.lat, s.lon) < (def.supplyRangeKm || 6)) rate = Math.max(rate, def.replenish);
+  });
   return rate;
+}
+
+// How far a unit can SEE enemy detail. Recon has the highest radius of any unit
+// in the game (that's its whole point); air units see moderately far; ordinary
+// ground units only spot what's right on top of them.
+function scoutRadiusKm(type) {
+  if (type === "recon") return 55;      // highest in the game, by design
+  const def = UNIT_TYPES[type] || {};
+  if (def.domain === "air") return 28;
+  if (type === "aa") return 30;         // SAM radar
+  return 8;
+}
+// True if any ready friendly unit can scout this point (enemy detail visible).
+function pointScouted(lat, lon) {
+  return (state.units || []).some(u => (u.trainingDaysLeft || 0) <= 0 &&
+    haversineKm(u.lat, u.lon, lat, lon) <= scoutRadiusKm(u.type));
 }
 
 // A region can field aircraft if a real military airport is nearby OR the
@@ -104,7 +127,7 @@ function unitSupply(u) {
 // ob Krki air base is ~4.5 km outside Brežice town, so keying off the city
 // centre left units parked on the airfield reading as unsupplied.
 const SUPPLY_SOURCE_RADIUS_KM = 8;
-function groundSupplySourceKm(lat, lon) {
+function groundSupplySourceKm(lat, lon, excludeId) {
   let best = Infinity;
   MILITARY_BASES.forEach(b => {
     if (b.lat != null) best = Math.min(best, haversineKm(lat, lon, b.lat, b.lon));
@@ -114,6 +137,16 @@ function groundSupplySourceKm(lat, lon) {
   state.completedBuildings.forEach(b => {
     if ((b.type === "military_base" || b.type === "fob") && b.lat != null) {
       best = Math.min(best, haversineKm(lat, lon, b.lat, b.lon));
+    }
+  });
+  // A friendly supply company is a mobile source of support in the field.
+  (state.units || []).forEach(s => {
+    if (s.id === excludeId) return;
+    const def = UNIT_TYPES[s.type];
+    if (def && def.isSupply && (s.trainingDaysLeft || 0) <= 0) {
+      const d = haversineKm(lat, lon, s.lat, s.lon);
+      // Normalise into the 8 km base envelope so "within its range" counts.
+      if (d < (def.supplyRangeKm || 6)) best = Math.min(best, d);
     }
   });
   return best;
@@ -126,13 +159,82 @@ function resupplyCostPerPoint(type) {
   return unitDeployCost(type) * 0.0012;
 }
 
+// Logistics attrition alone can't destroy a unit — it bottoms out here and the
+// unit fights on (and can still move) at reduced effectiveness. Only COMBAT
+// damage can take supply below this to 0 (= destroyed).
+const SUPPLY_FLOOR = 8;
+const REPLENISH_SUPPLY_PER_H = 28; // manual "START REPLENISHING" speed
+const REPLENISH_COND_PER_H = 22;
+
+// Draw manpower for reinforcements: active duty first, then activated reserves.
+function chargeManpower(n) {
+  n = Math.max(0, n);
+  const fromActive = Math.min(state.econ.manpowerActive, n);
+  state.econ.manpowerActive -= fromActive;
+  const rest = n - fromActive;
+  if (rest > 0 && state.econ.reserveActivated) state.econ.manpowerReserve = Math.max(0, state.econ.manpowerReserve - rest);
+}
+function replenishManpowerPerPoint(type) { return (UNIT_TYPES[type].manpower || 60) * 0.003; }
+
+// Up-front cost estimate shown on the START REPLENISHING button.
+function replenishCostEstimate(u) {
+  const missSup = Math.max(0, 100 - unitSupply(u));
+  const missCond = Math.max(0, 100 - (u.condition == null ? 100 : u.condition));
+  const rate = resupplyCostPerPoint(u.type);
+  const euros = missSup * rate + missCond * rate * 0.4;
+  const manpower = Math.round(missSup * replenishManpowerPerPoint(u.type));
+  return { euros, manpower, missSup, missCond };
+}
+
+// True while a unit is so short on supply it fights and moves at a penalty.
+function outOfSupply(u) { return unitSupply(u) <= 20; }
+// Movement / combat multiplier from low supply (1 at 25%+, down to ~0.55 empty).
+function supplyEffMult(u) {
+  const s = unitSupply(u);
+  if (s >= 25) return 1;
+  return 0.55 + (s / 25) * 0.45;
+}
+
 // Move one unit's supply for `simHours`, charging the treasury for whatever it
 // actually draws. Returns the euros spent.
 function tickUnitSupply(u, simHours, inCombat) {
   const air = unitIsAir(u.type);
   let supply = unitSupply(u);
-  let drain = 0, regen = 0;
+  let spent = 0;
 
+  // Manual replenish (player pressed START REPLENISHING): a fast top-up of both
+  // supply AND condition, paid in treasury and MANPOWER. Only while parked in
+  // supply range; auto-stops when full or when funds/manpower run out.
+  if (u.replenishing && !u.moving && !inCombat) {
+    const inRange = air ? nearestFriendlyAirportKm(u.lat, u.lon) < 6
+                        : groundSupplySourceKm(u.lat, u.lon, u.id) < SUPPLY_SOURCE_RADIUS_KM;
+    if (!inRange) { u.replenishing = false; u.lastSupplyState = "holding"; }
+    else {
+      const rate = resupplyCostPerPoint(u.type), mpPerPt = replenishManpowerPerPoint(u.type);
+      let want = Math.min(100 - supply, REPLENISH_SUPPLY_PER_H * simHours);
+      const maxByCash = rate > 0 ? state.econ.treasury / rate : want;
+      const maxByMp = mpPerPt > 0 ? availableManpower() / mpPerPt : want;
+      want = Math.max(0, Math.min(want, maxByCash, maxByMp));
+      if (want > 0) {
+        supply += want;
+        spent = want * rate;
+        state.econ.treasury -= spent;
+        chargeManpower(want * mpPerPt);
+      }
+      if ((u.condition || 100) < 100) u.condition = Math.min(100, (u.condition || 100) + REPLENISH_COND_PER_H * simHours);
+      u.supply = Math.max(0, Math.min(100, supply)); u.hp = u.supply;
+      u.lastSupplyState = "replenishing_manual";
+      if (u.supply >= 99.9 && (u.condition || 100) >= 99.9) {
+        u.replenishing = false;
+        logEvent(`<b>${u.name}</b> fully replenished and back to fighting shape.`);
+      } else if (want <= 0) {
+        u.replenishing = false; u.lastSupplyState = "unfunded";
+      }
+      return spent;
+    }
+  }
+
+  let drain = 0, regen = 0;
   if (inCombat) drain += SUPPLY.combatDrain;
 
   if (air) {
@@ -140,12 +242,11 @@ function tickUnitSupply(u, simHours, inCombat) {
     else if (nearestFriendlyAirportKm(u.lat, u.lon) < 6) regen = SUPPLY.airbaseRegen;
     else drain += SUPPLY.airParkedOffBase;
   } else {
-    const nearBase = groundSupplySourceKm(u.lat, u.lon) < SUPPLY_SOURCE_RADIUS_KM;
+    const nearBase = groundSupplySourceKm(u.lat, u.lon, u.id) < SUPPLY_SOURCE_RADIUS_KM;
     if (nearBase && !inCombat) regen = SUPPLY.baseRegen;
     else if (!nearBase) drain += SUPPLY.groundUnsupplied;
   }
 
-  let spent = 0;
   if (regen > 0 && supply < 100) {
     const wanted = Math.min(100 - supply, regen * simHours);
     const rate = resupplyCostPerPoint(u.type);
@@ -157,7 +258,10 @@ function tickUnitSupply(u, simHours, inCombat) {
     }
     u.lastSupplyState = affordable < wanted - 1e-6 ? "unfunded" : "resupplying";
   } else if (drain > 0) {
+    const before = supply;
     supply -= drain * simHours;
+    // Non-combat (logistics) attrition can't push a unit below the floor.
+    if (!inCombat) supply = Math.max(supply, Math.min(before, SUPPLY_FLOOR));
     u.lastSupplyState = inCombat ? "combat" : "draining";
   } else {
     u.lastSupplyState = "holding";
@@ -174,6 +278,7 @@ function supplyStatusNote(u) {
   const air = unitIsAir(u.type);
   switch (u.lastSupplyState) {
     case "combat": return "In contact — burning supply fast";
+    case "replenishing_manual": return "REPLENISHING — drawing stores & reinforcements";
     case "resupplying": return air ? "Resupplying at airfield" : "Resupplying from base";
     case "unfunded": return "Resupply halted — treasury empty";
     case "draining":
@@ -312,6 +417,9 @@ function deployUnit(type, cityId) {
     supply: 100,          // doubles as the unit's health pool — see tickUnitSupply
     hp: 100,              // legacy mirror of `supply`, kept in step for old code
     condition: 100,       // equipment/readiness status, decays with travel
+    exp: 0,               // veterancy — grows with battles; drives stars (see unitStars)
+    wins: 0, battles: 0,  // battle record
+    replenishing: false,  // manual "START REPLENISHING" in progress
     freePath: false,      // if true, ignores road snapping on next move order
     fuelKm: def.fuelKm || null,     // air units only
     maxFuelKm: def.fuelKm || null,
@@ -395,6 +503,7 @@ async function applyMoveOrder(u, waypoints) {
 
   u.path = fullPath;
   u.moving = true;
+  u.replenishing = false; // moving out of the depot cancels a manual replenish
   u.cityId = null;
   playOrderConfirm(u.type); // boots / tracks / wings, per unit type
   updateSelectedUnitBox();
@@ -465,7 +574,8 @@ function tickUnits(simHours) {
       next._prepped = true; u.crossPrepLeft = null; u.preparing = false;
     }
 
-    const speed = unitEffectiveSpeed(u.type);
+    // Out-of-supply units still move, but slower (see supplyEffMult).
+    const speed = unitEffectiveSpeed(u.type) * supplyEffMult(u);
     let remainingKm = speed * simHours;
     let traveledKm = 0;
 
@@ -588,6 +698,26 @@ function updateSelectedUnitBox() {
   const supColor = sup >= 60 ? "#7fe0a0" : sup >= 35 ? "#e0c97f" : "#e06c60";
   const condColor = u.condition >= 70 ? "#7fe0a0" : u.condition >= 40 ? "#e0c97f" : "#e06c60";
 
+  const stars = unitStars(u);
+  const engagedNow = state.engagedUnitIds && state.engagedUnitIds.has(u.id);
+  const est = replenishCostEstimate(u);
+  const inSupplyRange = air ? nearestFriendlyAirportKm(u.lat, u.lon) < 6
+                            : groundSupplySourceKm(u.lat, u.lon, u.id) < SUPPLY_SOURCE_RADIUS_KM;
+  const needsReplenish = sup < 99.5 || (u.condition || 100) < 99.5;
+  let replenishBtn = "";
+  if (u.trainingDaysLeft <= 0 && !u.moving) {
+    if (u.replenishing) {
+      replenishBtn = `<button class="uBtn" id="unitReplenishBtn">■ STOP REPLENISHING</button>
+        <div class="usupplyNote" style="color:#7fe0a0">REPLENISHING — drawing stores &amp; reinforcements</div>`;
+    } else if (needsReplenish && inSupplyRange) {
+      replenishBtn = `<button class="uBtn" id="unitReplenishBtn">▶ START REPLENISHING</button>
+        <div class="usupplyNote">Cost ≈ <b>${fmtEUR(est.euros)}</b> + <b>${fmtNum(est.manpower)}</b> manpower to full</div>`;
+    } else if (needsReplenish) {
+      replenishBtn = `<div class="usupplyNote">Park next to a base, FOB or Supply Company to replenish.</div>`;
+    }
+  }
+  const battleBtn = engagedNow ? `<button class="uBtn uBtnWar" id="unitBattleBtn">⚔ View Battle</button>` : "";
+
   const status = u.trainingDaysLeft > 0
     ? `<span style="color:#e0c97f">Training — ready in ${u.trainingDaysLeft.toFixed(1)}d</span>`
     : u.calculatingRoute ? "Calculating terrain route…"
@@ -622,8 +752,13 @@ function updateSelectedUnitBox() {
       ${stat("MEN", def.manpower)}
     </div>
 
+    <div class="uSection">VETERANCY</div>
+    <div class="uVet"><span class="uStars">${starString(stars)}</span> ${stars}/5 · +${Math.round((unitExpMult(u) - 1) * 100)}% combat · ${u.wins || 0} win${(u.wins || 0) === 1 ? "" : "s"}</div>
+
     <div class="uSection">ORDERS</div>
     <div>${status}</div>
+    ${battleBtn}
+    ${replenishBtn}
     ${air ? "" : `<label style="display:block;margin-top:5px;"><input type="checkbox" id="unitFreePathToggle" ${u.freePath ? "checked" : ""}> Ignore roads — follow exact drawn path <kbd>X</kbd></label>`}
     ${state.pendingWaypoints.length
       ? `<div style="color:#e0c97f;margin-top:5px">${state.pendingWaypoints.length} pending waypoint(s)</div>`
@@ -634,5 +769,14 @@ function updateSelectedUnitBox() {
   `;
   const toggle = document.getElementById("unitFreePathToggle");
   if (toggle) toggle.addEventListener("change", (e) => { u.freePath = e.target.checked; });
+  const rb = document.getElementById("unitReplenishBtn");
+  if (rb) rb.addEventListener("click", () => {
+    u.replenishing = !u.replenishing;
+    if (u.replenishing) logEvent(`<b>${u.name}</b> begins replenishing — drawing supply and reinforcements from the depot.`);
+    updateSelectedUnitBox();
+    if (typeof mapEngine !== "undefined" && mapEngine) mapEngine._scheduleRender();
+  });
+  const bb = document.getElementById("unitBattleBtn");
+  if (bb && typeof openBattleModal === "function") bb.addEventListener("click", () => openBattleModal({ friendlyUnitId: u.id }));
   if (typeof layoutBottomLeftPanels === "function") layoutBottomLeftPanels();
 }

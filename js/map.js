@@ -31,6 +31,11 @@ let buildDrawPoints = [];
 let placementMode = null; // { type, cityId, municipalityId, municipality }
 let cursorScreenPos = null;
 
+// One seamless zone-texture tile spans this many Mercator world units (~200 m at
+// Slovenia's latitude). Constant in WORLD space, so the texture is anchored to
+// the map and stays put as the camera pans/zooms (see the zone fill below).
+const ZONE_TILE_WORLD = 0.0000072;
+
 // Layer toggles state
 // Which map layers are painted. Essentials (the player's own country and its
 // units) default on; everything optional defaults off so a fresh game starts
@@ -94,7 +99,8 @@ function initMap() {
   // Interaction handlers on map canvas
   let mouseDownPos = null;
   glCanvas.addEventListener("mousedown", (e) => {
-    mouseDownPos = { x: e.clientX, y: e.clientY, time: Date.now() };
+    mouseDownPos = { x: e.clientX, y: e.clientY, time: Date.now(), button: e.button };
+    if (e.button === 1) e.preventDefault(); // suppress the middle-click autoscroll cursor
     onMapMouseDown(screenEventToLatLng(e), e);
   });
 
@@ -114,7 +120,13 @@ function initMap() {
       const dy = e.clientY - mouseDownPos.y;
       const dt = Date.now() - mouseDownPos.time;
       if (Math.hypot(dx, dy) < 6 && dt < 400) {
-        onMapClick(screenEventToLatLng(e), e);
+        if (e.button === 1) {
+          // Middle-click (no drag): drop a ping visible to everyone in co-op.
+          const ll = screenEventToLatLng(e).latlng;
+          pingAt(ll.lat, ll.lng);
+        } else {
+          onMapClick(screenEventToLatLng(e), e);
+        }
       }
     }
     mouseDownPos = null;
@@ -157,6 +169,55 @@ function prepareMunicipalitiesData() {
   MUNICIPALITIES.forEach(m => {
     municipalityPolygons[m.id] = m;
   });
+}
+
+// ---- Map pings (middle-click) ----------------------------------------------
+// A ping lands in state.pings so it rides the co-op state snapshot to every
+// player. Clients relay theirs to the host, which pushes it back to all. No
+// timestamps are stored on the ping (cross-machine clocks differ) — each client
+// times the animation from when it first SEES the id (_pingSeen).
+let _pingSeen = Object.create(null);
+const PING_DUR_MS = 2600;
+function pingAt(lat, lon) {
+  const ping = { id: (state.pingSeq = (state.pingSeq || 0) + 1) + "_" + Date.now() + "_" + Math.floor(Math.random() * 1000), lat, lon };
+  if (typeof playSound === "function") { try { playSound("uiClick"); } catch (e) {} }
+  // Client: hand it to the host, which owns state.pings and rebroadcasts it.
+  if (typeof mpRelayIfClient === "function" && mpRelayIfClient("ping", ping)) return;
+  if (!state.pings) state.pings = [];
+  state.pings.push(ping);
+  if (mapEngine) mapEngine._scheduleRender();
+}
+
+// Expanding double-ring + centre dot. t is 0..1 through the ping's life.
+function drawPing(ctx, pg, t) {
+  const p = latLngToScreen(pg.lat, pg.lon);
+  const ease = 1 - Math.pow(1 - t, 2);
+  const baseR = 8 + ease * 34;
+  ctx.save();
+  ctx.lineWidth = 2.5;
+  for (let k = 0; k < 2; k++) {
+    const rt = (t + k * 0.5) % 1;
+    const r = 8 + (1 - Math.pow(1 - rt, 2)) * 34;
+    ctx.strokeStyle = `rgba(127, 224, 201, ${0.85 * (1 - rt)})`;
+    ctx.beginPath();
+    ctx.arc(p[0], p[1], r, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.fillStyle = `rgba(127, 224, 201, ${0.9 * (1 - t)})`;
+  ctx.beginPath();
+  ctx.arc(p[0], p[1], 4, 0, Math.PI * 2);
+  ctx.fill();
+  // Crosshair spikes
+  ctx.strokeStyle = `rgba(200, 255, 240, ${0.9 * (1 - t)})`;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  const s = baseR;
+  ctx.moveTo(p[0] - s, p[1]); ctx.lineTo(p[0] - s + 6, p[1]);
+  ctx.moveTo(p[0] + s, p[1]); ctx.lineTo(p[0] + s - 6, p[1]);
+  ctx.moveTo(p[0], p[1] - s); ctx.lineTo(p[0], p[1] - s + 6);
+  ctx.moveTo(p[0], p[1] + s); ctx.lineTo(p[0], p[1] + s - 6);
+  ctx.stroke();
+  ctx.restore();
 }
 
 // ----------------------------------------------------------------------------
@@ -424,6 +485,18 @@ function drawStaticLayers(ctx, zoom) {
 
   // 3. Slovenia's own border — the brightest line on the map.
   if (layerState.borders && BORDER_RING && BORDER_RING.length) {
+    // First erase a band along Slovenia's frontier so the neighbours' grey
+    // Natural-Earth borders (a lower-detail dataset that doesn't trace the same
+    // path) don't double up beside our high-detail yellow line. destination-out
+    // removes the already-drawn grey pixels within the stroke; the yellow border
+    // is then laid down cleanly on top, alone.
+    ctx.save();
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.strokeStyle = "#000";
+    ctx.lineWidth = 8;
+    drawPolyline(ctx, BORDER_RING, true);
+    ctx.restore();
+
     ctx.strokeStyle = "#ffe08a";
     ctx.lineWidth = 2.6;
     ctx.shadowColor = "rgba(0,0,0,0.6)";
@@ -541,6 +614,20 @@ function drawDynamicOverlays(ctx, engine, vw, vh, zoom) {
     });
   }
 
+  // Captured municipalities — filled red and ALWAYS drawn, even when the
+  // municipality overlay is off, so occupied ground reads at a glance.
+  const capM = state.diplomacy && state.diplomacy.capturedMunicipalities;
+  if (capM) {
+    ctx.fillStyle = "rgba(224, 74, 64, 0.30)";
+    ctx.strokeStyle = "rgba(255, 96, 84, 0.90)";
+    ctx.lineWidth = 1.6;
+    for (const id in capM) {
+      const m = municipalityPolygons[id] || (typeof municipalityById === "function" ? municipalityById(id) : null);
+      if (!m || !m.rings) continue;
+      m.rings.forEach(ring => drawPolygonRing(ctx, ring, true));
+    }
+  }
+
   // Selected Municipality Highlight
   if (selectedMunicipalityId && municipalityPolygons[selectedMunicipalityId]) {
     const selM = municipalityPolygons[selectedMunicipalityId];
@@ -554,13 +641,42 @@ function drawDynamicOverlays(ctx, engine, vw, vh, zoom) {
   if (state.zones && state.zones.length) {
     state.zones.forEach(z => {
       const zt = ZONE_TYPES[z.kind] || {};
+      // Full outline of the drawn extent (dashed).
       ctx.strokeStyle = zt.color || "#7fb0e0";
       ctx.lineWidth = 1.5;
       ctx.setLineDash([4, 4]);
       drawPolygonRing(ctx, z.points, false);
       ctx.setLineDash([]);
-      ctx.fillStyle = (zt.color || "#7fb0e0") + "22";
-      drawPolygonRing(ctx, devScaledPoints(z), true);
+      // Fill the built-out area. If the zone has seamless artwork use it as a
+      // repeating pattern that fills the whole polygon; otherwise fall back to
+      // the translucent single colour.
+      const filled = devScaledPoints(z);
+      const pat = zonePattern(ctx, z.kind);
+      if (pat) {
+        // Anchor the seamless texture to the MAP (world space): tie the pattern's
+        // transform to the overlay view transform so a given patch of ground
+        // always shows the same part of the texture, no matter where the camera
+        // is. Without this the pattern is fixed to the screen and slides under
+        // the polygon as you pan/zoom.
+        const zimg = zoneArt(z.kind);
+        if (zimg && zimg.naturalWidth && pat.setTransform) {
+          const periodX = ZONE_TILE_WORLD * _vk;        // css px per tile
+          const scale = periodX / zimg.naturalWidth;
+          const periodY = zimg.naturalHeight * scale;
+          const mod = (v, p) => v - Math.floor(v / p) * p; // keep translate small & precise
+          try { pat.setTransform(new DOMMatrix([scale, 0, 0, scale, mod(_vox, periodX), mod(_voy, periodY)])); } catch (e) {}
+        }
+        ctx.save();
+        ctx.fillStyle = pat;
+        ctx.strokeStyle = (zt.color || "#7fb0e0") + "88";
+        ctx.lineWidth = 1;
+        ctx.globalAlpha = 0.9;
+        drawPolygonRing(ctx, filled, true);
+        ctx.restore();
+      } else {
+        ctx.fillStyle = (zt.color || "#7fb0e0") + "22";
+        drawPolygonRing(ctx, filled, true);
+      }
     });
   }
 
@@ -602,6 +718,46 @@ function drawDynamicOverlays(ctx, engine, vw, vh, zoom) {
       }
     });
     ctx.setLineDash([]);
+  }
+
+  // 10b. Selected-unit range rings: SCOUT range in yellow (how far it sees —
+  // recon's is by far the largest) and ATTACK range in red (how far it can
+  // strike). Only the selected unit, to avoid cluttering the map.
+  if (state.selectedUnitId) {
+    const su = state.units.find(x => x.id === state.selectedUnitId);
+    if (su && su.trainingDaysLeft <= 0) {
+      const def = UNIT_TYPES[su.type] || {};
+      const scoutKm = typeof scoutRadiusKm === "function" ? scoutRadiusKm(su.type) : 8;
+      const attackKm = def.range || 0;
+
+      // Scout range — yellow, drawn first (it's the larger one, especially recon).
+      if (scoutKm > 0) {
+        ctx.strokeStyle = "rgba(255, 211, 92, 0.85)";
+        ctx.fillStyle = "rgba(255, 211, 92, 0.06)";
+        ctx.lineWidth = 1.6;
+        ctx.setLineDash([6, 5]);
+        drawCircleMeters(ctx, su.lat, su.lon, scoutKm * 1000);
+        ctx.setLineDash([]);
+      }
+      // Attack / strike range — red, on top.
+      if (attackKm > 0) {
+        ctx.strokeStyle = "rgba(224, 74, 64, 0.9)";
+        ctx.fillStyle = "rgba(224, 74, 64, 0.08)";
+        ctx.lineWidth = 1.8;
+        ctx.setLineDash([5, 4]);
+        drawCircleMeters(ctx, su.lat, su.lon, attackKm * 1000);
+        ctx.setLineDash([]);
+      }
+      // Tiny legend so the colours are unambiguous.
+      const lp = latLngToScreen(su.lat, su.lon);
+      ctx.font = "10px system-ui";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "rgba(255, 211, 92, 0.95)";
+      ctx.fillText("● scout", lp[0] + 12, lp[1] + 26);
+      ctx.fillStyle = "rgba(224, 74, 64, 0.95)";
+      ctx.fillText("● attack", lp[0] + 12, lp[1] + 38);
+    }
   }
 
   // 11. Resource Deposits
@@ -659,12 +815,28 @@ function drawDynamicOverlays(ctx, engine, vw, vh, zoom) {
         drawPolyline(ctx, b.damPoints, false);
       } else if (b.lat != null && b.lon != null) {
         const bounds = buildingBounds(b.lat, b.lon, def, b.munScale || 1);
-        ctx.strokeStyle = sectorColor(def);
-        ctx.fillStyle = "rgba(10, 15, 20, 0.7)";
-        ctx.lineWidth = 1.5;
-        drawBoundsRect(ctx, bounds);
-        const pt = latLngToScreen(b.lat, b.lon);
-        drawLabelTag(ctx, pt[0], pt[1], def.label || b.type, sectorColor(def));
+        const r = boundsRectPx(bounds);
+        const img = buildingArt(b.type);
+        if (img) {
+          // Finished building: draw its artwork at the image's own aspect ratio
+          // (rectangles, not just squares), centred on the footprint. Width comes
+          // from the footprint; height follows the image.
+          const w = Math.max(r.w, 22), h = w * artAspect(img);
+          const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+          const x = cx - w / 2, y = cy - h / 2;
+          ctx.drawImage(img, x, y, w, h);
+          ctx.strokeStyle = sectorColor(def);
+          ctx.lineWidth = 1;
+          ctx.strokeRect(x, y, w, h);
+          if (zoom >= 12) { const pt = latLngToScreen(b.lat, b.lon); drawLabelTag(ctx, pt[0], pt[1], def.label || b.type, sectorColor(def)); }
+        } else {
+          ctx.strokeStyle = sectorColor(def);
+          ctx.fillStyle = "rgba(10, 15, 20, 0.7)";
+          ctx.lineWidth = 1.5;
+          drawBoundsRect(ctx, bounds);
+          const pt = latLngToScreen(b.lat, b.lon);
+          drawLabelTag(ctx, pt[0], pt[1], def.label || b.type, sectorColor(def));
+        }
       }
     });
   }
@@ -679,11 +851,12 @@ function drawDynamicOverlays(ctx, engine, vw, vh, zoom) {
         ctx.setLineDash([]);
       } else if (p.lat != null && p.lon != null) {
         const bounds = buildingBounds(p.lat, p.lon, def, municipalityScale(p.cityId, p.municipalityId));
-        ctx.strokeStyle = sectorColor(def);
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([4, 4]);
-        drawBoundsRect(ctx, bounds);
-        ctx.setLineDash([]);
+        const r = boundsRectPx(bounds);
+        // Under construction: the yellow-orange hatched placeholder, at the same
+        // aspect ratio the finished artwork will have.
+        const w = Math.max(r.w, 18), h = w * artAspect(buildingArt(p.type));
+        const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+        drawHatchBox(ctx, cx - w / 2, cy - h / 2, w, h, "#e0a83a");
         const pt = latLngToScreen(p.lat, p.lon);
         drawLabelTag(ctx, pt[0], pt[1], `${def.label || p.type} (${Math.ceil(p.daysLeft)}d)`, "#e0c97f");
       }
@@ -735,10 +908,14 @@ function drawDynamicOverlays(ctx, engine, vw, vh, zoom) {
     });
 
     // Friendly Unit Icons
+    const engagedSet = state.engagedUnitIds || new Set();
     state.units.forEach(u => {
       const pt = latLngToScreen(u.lat, u.lon);
       const sel = u.id === state.selectedUnitId;
       drawUnitMarker(ctx, pt[0], pt[1], u, sel);
+      if (u.trainingDaysLeft <= 0 && engagedSet.has(u.id)) drawCombatIcon(ctx, pt[0], pt[1]);
+      if (u.replenishing) drawUnitBelowLabel(ctx, pt[0], pt[1], "REPLENISHING", "#7fe0a0");
+      else if ((u.supply != null ? u.supply : 100) <= 20) drawUnitBelowLabel(ctx, pt[0], pt[1], "LOW SUPPLY", "#e06c60");
     });
 
     // Enemy Formations
@@ -747,6 +924,7 @@ function drawDynamicOverlays(ctx, engine, vw, vh, zoom) {
         const pt = latLngToScreen(e.lat, e.lon);
         const flag = (NEIGHBOR_NATIONS[e.nation] || {}).flag || "🚩";
         drawEnemyMarker(ctx, pt[0], pt[1], flag, Math.round(e.strength), e.engaged);
+        if (e.engaged) drawCombatIcon(ctx, pt[0], pt[1]);
       });
     }
   }
@@ -787,25 +965,48 @@ function drawDynamicOverlays(ctx, engine, vw, vh, zoom) {
     });
   }
 
-  // 19. Building Placement Ghost Cursor Preview
+  // 18b. Map pings (middle-click, shared in co-op). Animation timed from first
+  // sight so cross-machine clock skew never matters; host/singleplayer prune the
+  // array once expired so it stops broadcasting.
+  if (state.pings && state.pings.length) {
+    const now = Date.now();
+    for (let i = state.pings.length - 1; i >= 0; i--) {
+      const pg = state.pings[i];
+      if (!_pingSeen[pg.id]) _pingSeen[pg.id] = now;
+      const age = now - _pingSeen[pg.id];
+      if (age > PING_DUR_MS) {
+        if (typeof mpRole === "undefined" || mpRole !== "client") state.pings.splice(i, 1);
+        delete _pingSeen[pg.id];
+        continue;
+      }
+      drawPing(ctx, pg, age / PING_DUR_MS);
+    }
+  }
+
+  // 19. Building Placement Ghost Cursor Preview — a yellow-orange hatched box the
+  // size/shape of the building's footprint, following the cursor. Once placed and
+  // built it is replaced by the building's artwork.
   if (placementMode && cursorScreenPos) {
     const def = BUILDING_TYPES[placementMode.type] || {};
-    const color = sectorColor(def);
-    ctx.fillStyle = color + "33";
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(cursorScreenPos.x, cursorScreenPos.y, 18, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
+    const footM = buildingFootprintMeters(def);
+    const w = Math.max(24, footM / metersPerPixel());
+    const h = w * artAspect(buildingArt(placementMode.type)); // match final image shape
+    const bx = cursorScreenPos.x - w / 2, by = cursorScreenPos.y - h / 2;
+    drawHatchBox(ctx, bx, by, w, h, "#e0a83a");
 
-    ctx.fillStyle = "#0a0f14";
-    ctx.fillRect(cursorScreenPos.x + 12, cursorScreenPos.y - 12, 140, 32);
-    ctx.strokeStyle = "#2a3a44";
-    ctx.strokeRect(cursorScreenPos.x + 12, cursorScreenPos.y - 12, 140, 32);
-    ctx.fillStyle = "#cfe3e8";
+    const label = def.label || placementMode.type;
     ctx.font = "11px system-ui";
-    ctx.fillText(def.label || placementMode.type, cursorScreenPos.x + 18, cursorScreenPos.y + 2);
+    const tw = ctx.measureText(label).width + 12;
+    const lx = cursorScreenPos.x + w / 2 + 8, ly = cursorScreenPos.y - 12;
+    ctx.fillStyle = "#0a0f14ee";
+    ctx.fillRect(lx, ly, tw, 24);
+    ctx.strokeStyle = "#e0a83a";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(lx, ly, tw, 24);
+    ctx.fillStyle = "#ffe0a8";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, lx + 6, ly + 12);
   }
 }
 
@@ -1022,6 +1223,78 @@ function drawBoundsRect(ctx, bounds) {
   ctx.stroke();
 }
 
+// Image aspect (height / width). 1 when the image isn't loaded yet or missing,
+// so buildings without art stay square. Lets tall/wide art draw as rectangles.
+function artAspect(img) {
+  return (img && img.naturalWidth) ? (img.naturalHeight / img.naturalWidth) : 1;
+}
+
+// Footprint bounds -> a screen-space rect {x,y,w,h}.
+function boundsRectPx(bounds) {
+  const tl = latLngToScreen(bounds[1][0], bounds[0][1]);
+  const br = latLngToScreen(bounds[0][0], bounds[1][1]);
+  const x = Math.min(tl[0], br[0]), y = Math.min(tl[1], br[1]);
+  const w = Math.abs(br[0] - tl[0]), h = Math.abs(br[1] - tl[1]);
+  return { x, y, w, h };
+}
+
+// A construction placeholder: translucent fill + diagonal hatch + solid outline,
+// in the given (yellow-orange) colour. Screen-space rect. Used for the placement
+// ghost that follows the cursor and for buildings still under construction.
+function drawHatchBox(ctx, x, y, w, h, color) {
+  color = color || "#e0a83a";
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x, y, w, h);
+  ctx.fillStyle = color + "22";
+  ctx.fill();
+  ctx.clip(); // keep the diagonal lines inside the box
+  ctx.strokeStyle = color + "aa";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  const step = 8;
+  for (let d = -h; d < w; d += step) { ctx.moveTo(x + d, y); ctx.lineTo(x + d + h, y + h); }
+  ctx.stroke();
+  ctx.restore();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.6;
+  ctx.strokeRect(x, y, w, h);
+}
+
+// Crossed-swords marker floated above a unit that is currently in a battle.
+function drawCombatIcon(ctx, x, y) {
+  ctx.save();
+  const iy = y - 22;
+  ctx.font = "14px system-ui";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  // dark disc behind so it reads on any terrain
+  ctx.fillStyle = "rgba(20,8,8,0.82)";
+  ctx.beginPath();
+  ctx.arc(x, iy, 9, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "#e06c60";
+  ctx.lineWidth = 1.3;
+  ctx.stroke();
+  ctx.fillStyle = "#ffd0c8";
+  ctx.fillText("⚔", x, iy + 0.5); // ⚔
+  ctx.restore();
+}
+
+// Small status word under a unit marker (REPLENISHING / LOW SUPPLY).
+function drawUnitBelowLabel(ctx, x, y, text, color) {
+  ctx.save();
+  ctx.font = "bold 9px system-ui";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const w = ctx.measureText(text).width + 8;
+  ctx.fillStyle = "rgba(10,15,20,0.82)";
+  ctx.fillRect(x - w / 2, y + 14, w, 13);
+  ctx.fillStyle = color || "#cfe3e8";
+  ctx.fillText(text, x, y + 21);
+  ctx.restore();
+}
+
 function drawCircleMeters(ctx, lat, lon, radiusMeters) {
   const pt = latLngToScreen(lat, lon);
   const pxRadius = radiusMeters / metersPerPixel();
@@ -1215,7 +1488,6 @@ function natoDevice(ctx, type, l, t, r, b, cx, cy) {
   const inset = 3;
   switch (type) {
     case "inf":
-    case "recon_drone":
       ctx.moveTo(l + inset, t + inset); ctx.lineTo(r - inset, b - inset);
       ctx.moveTo(r - inset, t + inset); ctx.lineTo(l + inset, b - inset);
       break;
@@ -1266,7 +1538,7 @@ function labelMinZoom(pop) {
 
 function unitGlyph(type) {
   return { ifv: "IFV", mbt: "MBT", inf: "INF", arty: "ART", recon: "RCN", aa: "AA",
-    fighter: "FTR", attack_air: "CAS", bomber: "BMB", recon_drone: "UAV", attack_drone: "UCV" }[type] || "?";
+    fighter: "FTR", attack_air: "CAS", bomber: "BMB", attack_drone: "UCV" }[type] || "?";
 }
 
 function metersPerPixel() {
@@ -1342,6 +1614,10 @@ function onMapClick(e) {
   }
   if (placementMode) { tryPlaceBuildingAt(e.latlng.lat, e.latlng.lng); return; }
 
+  // Any map click dismisses an open inspection popup (an enemy click below
+  // re-opens it for the new target).
+  if (mapPopupAnchor) closeMapPopup();
+
   // Check if a unit icon was clicked
   const clickedUnit = state.units.find(u => {
     const pt = latLngToScreen(u.lat, u.lon);
@@ -1351,6 +1627,14 @@ function onMapClick(e) {
     selectUnit(clickedUnit.id);
     return;
   }
+
+  // Clicking an enemy formation inspects it (type always; supply/condition/exp
+  // only with recon nearby or while it's in a battle).
+  const clickedEnemy = ((state.diplomacy && state.diplomacy.enemyUnits) || []).find(en => {
+    const pt = latLngToScreen(en.lat, en.lon);
+    return Math.hypot(pt[0] - e.x, pt[1] - e.y) < 20;
+  });
+  if (clickedEnemy) { showEnemyInfoPopup(clickedEnemy); return; }
 
   if (!state.selectedUnitId) {
     if (typeof isOutsideSlovenia === "function" && isOutsideSlovenia(e.latlng.lat, e.latlng.lng)) {
@@ -1406,7 +1690,7 @@ function onMapKeydown(e) {
   if (e.key === "Backspace") {
     if (typing) return;
     if (buildMode) {
-      if (buildDrawPoints.length) { buildDrawPoints.pop(); redrawBuildLine(); }
+      if (buildDrawPoints.length) { buildDrawPoints = buildDrawPoints.slice(0, -1); redrawBuildLine(); }
       e.preventDefault();
       return;
     }
@@ -1448,6 +1732,9 @@ function onMapKeydown(e) {
     renderPendingLine();
   } else if (e.key === "Escape") {
     if (typing) return;
+    const bm = document.getElementById("battleModal");
+    if (bm && !bm.classList.contains("hidden")) { closeBattleModal(); return; }
+    if (mapPopupAnchor) { closeMapPopup(); return; }
     if (typeof settingsOpen === "function" && settingsOpen()) { closeSettings(); return; }
     if (typeof pauseMenuOpen !== "undefined" && pauseMenuOpen) { closePauseMenu(); return; }
     if (placementMode) { cancelPlacementMode(); return; }
@@ -1462,20 +1749,124 @@ function onMapKeydown(e) {
 // so it tracks its lat/lon while the camera pans and zooms.
 let mapPopupAnchor = null; // { lat, lon }
 
+let _popupRaf = 0;
 function showMapPopup(lat, lon, html) {
   const el = document.getElementById("mapPopup");
   if (!el) return;
   mapPopupAnchor = { lat, lon };
-  el.innerHTML = `<button class="mapPopupClose" onclick="closeMapPopup()">✕</button>${html}`;
+  el.innerHTML = `<button class="mapPopupClose" onclick="closeMapPopup()" title="Close">✕</button>${html}`;
   el.classList.remove("hidden");
   positionMapPopup();
+  // Track the anchor every animation frame while the popup is open, so it glues
+  // to its lat/lon as the camera pans/zooms even if the overlay pass is throttled.
+  if (!_popupRaf) {
+    const tick = () => {
+      if (!mapPopupAnchor) { _popupRaf = 0; return; }
+      positionMapPopup();
+      _popupRaf = requestAnimationFrame(tick);
+    };
+    _popupRaf = requestAnimationFrame(tick);
+  }
 }
 
 function closeMapPopup() {
   mapPopupAnchor = null;
+  if (_popupRaf) { cancelAnimationFrame(_popupRaf); _popupRaf = 0; }
   const el = document.getElementById("mapPopup");
   if (el) el.classList.add("hidden");
 }
+
+// ---- Enemy inspection popup + battle-status modal --------------------------
+function showEnemyInfoPopup(e) {
+  const nat = NEIGHBOR_NATIONS[e.nation] || {};
+  const detail = ((typeof pointScouted === "function") && pointScouted(e.lat, e.lon)) || e.engaged;
+  const condPct = e.initialStrength ? Math.round((e.strength / e.initialStrength) * 100) : 100;
+  const stars = typeof unitStars === "function" ? unitStars(e) : 1;
+  let html = `<div class="enemyPop">
+    <div class="epTitle">${nat.flag || "🚩"} ${e.kindLabel || "Enemy Battlegroup"}</div>
+    <div class="epSub">${nat.name || e.nation} · ${fmtNum(Math.round(e.strength))} troops</div>`;
+  if (detail) {
+    html += `<div class="epRow">Condition <b>${condPct}%</b></div>
+      <div class="epRow">Supply <b>${Math.max(5, Math.min(100, condPct))}%</b></div>
+      <div class="epRow">Experience <span class="uStars">${starString(stars)}</span> ${stars}/5</div>`;
+  } else {
+    html += `<div class="epRow" style="color:#9fb5bd">Bring reconnaissance closer to read its supply, condition &amp; experience.</div>`;
+  }
+  if (e.engaged) html += `<button class="uBtn uBtnWar" onclick="openBattleModal({enemyId:${e.id}})">⚔ View Battle</button>`;
+  html += `</div>`;
+  showMapPopup(e.lat, e.lon, html);
+}
+
+// Gather everyone in one battle: all friendly units engaged with the picked
+// enemy (or the picked friendly unit's enemies) and, transitively, every unit &
+// formation tied into that same fight — so multiple units on one enemy, or one
+// unit spanning several enemies, all show as a single combined battle.
+function assembleBattle(opts) {
+  const enemies = (state.diplomacy && state.diplomacy.enemyUnits) || [];
+  const enemySet = new Set(), unitSet = new Set();
+  if (opts.enemyId != null) {
+    const e0 = enemies.find(x => x.id === opts.enemyId);
+    if (e0) { enemySet.add(e0); (e0.engagedUnitIds || []).forEach(id => unitSet.add(id)); }
+  }
+  if (opts.friendlyUnitId != null) unitSet.add(opts.friendlyUnitId);
+  for (let i = 0; i < 3; i++) {
+    enemies.forEach(e => { if ((e.engagedUnitIds || []).some(id => unitSet.has(id))) enemySet.add(e); });
+    enemySet.forEach(e => (e.engagedUnitIds || []).forEach(id => unitSet.add(id)));
+  }
+  return { friendly: state.units.filter(u => unitSet.has(u.id)), enemies: Array.from(enemySet) };
+}
+
+function openBattleModal(opts) {
+  const { friendly, enemies } = assembleBattle(opts || {});
+  if (!friendly.length && !enemies.length) return;
+  let modal = document.getElementById("battleModal");
+  if (!modal) {
+    modal = document.createElement("div");
+    modal.id = "battleModal";
+    modal.className = "hidden";
+    modal.addEventListener("click", (ev) => { if (ev.target === modal) closeBattleModal(); });
+    document.body.appendChild(modal);
+  }
+  const card = (obj, isEnemy) => {
+    const def = isEnemy ? null : UNIT_TYPES[obj.type];
+    const name = isEnemy ? (obj.kindLabel || "Enemy Battlegroup") : obj.name;
+    const img = isEnemy ? obj.image : (def && def.image);
+    const cond = isEnemy ? (obj.initialStrength ? Math.round(obj.strength / obj.initialStrength * 100) : 100) : Math.round(obj.condition || 100);
+    const sup = isEnemy ? Math.max(5, Math.min(100, cond)) : Math.round(unitSupply(obj));
+    const stars = unitStars(obj);
+    const sub = isEnemy ? fmtNum(Math.round(obj.strength)) + " troops" : (def ? def.label : "");
+    const col = (p) => p >= 60 ? "#7fe0a0" : p >= 35 ? "#e0c97f" : "#e06c60";
+    return `<div class="bmUnit">
+      <div class="bmImg" style="${img ? `background-image:url('${img}')` : ""}"></div>
+      <div class="bmInfo">
+        <div class="bmName">${name}</div>
+        <div class="bmMeta">${sub}</div>
+        <div class="bmBar"><i>Sup</i><span class="bmTrack"><span style="width:${sup}%;background:${col(sup)}"></span></span></div>
+        <div class="bmBar"><i>Cnd</i><span class="bmTrack"><span style="width:${cond}%;background:${col(cond)}"></span></span></div>
+        <div class="bmStars"><span class="uStars">${starString(stars)}</span> ${stars}/5</div>
+      </div>
+    </div>`;
+  };
+  const fp = friendly.reduce((s, u) => s + (typeof playerUnitPower === "function" ? playerUnitPower(u) : 0), 0);
+  const es = enemies.reduce((s, e) => s + e.strength, 0);
+  modal.innerHTML = `<div class="bmBox">
+    <div class="bmHead"><span>⚔ BATTLE STATUS</span><button class="bmClose" onclick="closeBattleModal()">✕</button></div>
+    <div class="bmCols">
+      <div class="bmCol">
+        <div class="bmColHead friendly">SLOVENIA — ${friendly.length} unit${friendly.length === 1 ? "" : "s"}</div>
+        ${friendly.map(u => card(u, false)).join("") || '<div class="bmEmpty">No friendly units.</div>'}
+      </div>
+      <div class="bmVs">VS</div>
+      <div class="bmCol">
+        <div class="bmColHead enemy">ENEMY — ${enemies.length} formation${enemies.length === 1 ? "" : "s"}</div>
+        ${enemies.map(e => card(e, true)).join("") || '<div class="bmEmpty">No enemy formations.</div>'}
+      </div>
+    </div>
+    <div class="bmFoot">Estimated firepower — Slovenia <b>${Math.round(fp)}</b> · Enemy strength <b>${fmtNum(Math.round(es))}</b></div>
+  </div>`;
+  modal.classList.remove("hidden");
+}
+function closeBattleModal() { const m = document.getElementById("battleModal"); if (m) m.classList.add("hidden"); }
 
 function positionMapPopup() {
   const el = document.getElementById("mapPopup");
@@ -1504,8 +1895,13 @@ function updateConstructionMarkers() {}
 
 // ---- Building Placement Tools ----
 function startPlacementMode(type, cityId, municipalityId) {
+  // Switching to a placed building must cancel any zone/dam/road draw in
+  // progress — otherwise buildMode stays "zone" and (since onMapClick checks
+  // buildMode first) clicks keep outlining the old zone under the new ghost.
+  if (buildMode && typeof cancelBuild === "function") cancelBuild();
   const municipality = MUNICIPALITIES.find(m => m.id === municipalityId);
   placementMode = { type, cityId, municipalityId, municipality };
+  if (mapEngine) mapEngine._scheduleRender();
 }
 
 function cancelPlacementMode() {
@@ -1647,7 +2043,11 @@ function startDamDraw(cityId, municipalityId) {
 
 function addBuildPoint(latlng) {
   if (buildMode === "dam" && buildDrawPoints.length >= 2) buildDrawPoints = [];
-  buildDrawPoints.push([latlng.lat, latlng.lng]);
+  // Reassign to a NEW array rather than push() in place: drawPolyline caches the
+  // projected geometry in a WeakMap keyed on the array reference (see projectPoints).
+  // Mutating in place left the preview stuck on the first two points' projection —
+  // that's the "the dashed line stops after the third point" bug.
+  buildDrawPoints = buildDrawPoints.concat([[latlng.lat, latlng.lng]]);
   redrawBuildLine();
 }
 

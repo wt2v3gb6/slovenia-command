@@ -23,7 +23,38 @@ function initMenu() {
   wireMenuButtons();
   wireSettings();
   applySoundSettings();
+  wireMenuParallax();
   playStartupIntro();
+}
+
+// Subtle mouse parallax: the background layers drift a few pixels opposite the
+// cursor for a bit of depth on the menu. We take over the map-bg's idle CSS
+// drift animation (inline transform can't beat a running @keyframes) and ease
+// toward the cursor target each frame.
+function wireMenuParallax() {
+  const menu = document.getElementById("mainMenu");
+  if (!menu) return;
+  const bg = document.getElementById("menuMapBg");
+  const vid = document.getElementById("menuVideoBg");
+  // Stop the CSS keyframe drift so our inline transform actually applies, and
+  // scale the layers up a touch so their edges never show as they shift.
+  if (bg)  { bg.style.animation = "none"; }
+  let tx = 0, ty = 0, cx = 0, cy = 0, raf = 0;
+  const BG_AMP = 28;
+  function frame() {
+    cx += (tx - cx) * 0.08;
+    cy += (ty - cy) * 0.08;
+    if (bg)  bg.style.transform  = `scale(1.12) translate(${cx}px, ${cy}px)`;
+    if (vid) vid.style.transform = `scale(1.09) translate(${cx * 0.6}px, ${cy * 0.6}px)`;
+    if (Math.abs(tx - cx) > 0.1 || Math.abs(ty - cy) > 0.1) raf = requestAnimationFrame(frame);
+    else raf = 0;
+  }
+  menu.addEventListener("mousemove", (e) => {
+    const nx = (e.clientX / window.innerWidth) - 0.5;   // -0.5 .. 0.5
+    const ny = (e.clientY / window.innerHeight) - 0.5;
+    tx = -nx * BG_AMP; ty = -ny * BG_AMP;               // opposite to cursor
+    if (!raf) raf = requestAnimationFrame(frame);
+  });
 }
 
 // ---- Startup intro (videos/STARTUPINTRO.mp4) ----
@@ -143,8 +174,10 @@ function wireMenuButtons() {
   const multi = document.getElementById("btnMulti");
   const settings = document.getElementById("btnSettings");
   const quit = document.getElementById("btnQuit");
+  const load = document.getElementById("btnLoad");
   if (single) single.addEventListener("click", () => launchGame("single"));
   if (multi) multi.addEventListener("click", () => { if (typeof mpOpenLobby === "function") mpOpenLobby(); });
+  if (load) load.addEventListener("click", () => triggerLoadPicker(loadGameFromMenu));
   if (settings) settings.addEventListener("click", openSettings);
   if (quit) quit.addEventListener("click", quitGame);
   wireMpLobby();
@@ -177,8 +210,10 @@ function onGameReady() {
   const single = document.getElementById("btnSingle");
   const multi = document.getElementById("btnMulti");
   const loading = document.getElementById("menuLoading");
+  const load = document.getElementById("btnLoad");
   if (single) single.disabled = false;
   if (multi) multi.disabled = false;
+  if (load) load.disabled = false;
   if (loading) loading.classList.add("ready");
   if (loading) loading.innerHTML = "Ready — choose a mode to begin";
   // Apply the saved hillshade preference now that the map exists.
@@ -339,10 +374,14 @@ let pausePrevPaused = false;
 
 function wirePauseMenu() {
   const resume = document.getElementById("pmResume");
+  const saveBtn = document.getElementById("pmSave");
+  const loadBtn = document.getElementById("pmLoad");
   const setBtn = document.getElementById("pmSettings");
   const menuBtn = document.getElementById("pmMenu");
   const quitBtn = document.getElementById("pmQuit");
   if (resume) resume.addEventListener("click", closePauseMenu);
+  if (saveBtn) saveBtn.addEventListener("click", saveGame);
+  if (loadBtn) loadBtn.addEventListener("click", () => triggerLoadPicker(loadGameInGame));
   if (setBtn) setBtn.addEventListener("click", openSettings);
   if (menuBtn) menuBtn.addEventListener("click", () => {
     // Returning to the menu shouldn't replay the startup intro.
@@ -374,6 +413,100 @@ function closePauseMenu() {
   const app = document.getElementById("app");
   if (app) app.classList.remove("blurred");
   if (typeof state !== "undefined") { state.paused = pausePrevPaused; if (typeof refreshSpeedButtons === "function") refreshSpeedButtons(); }
+}
+
+// ---- Save / Load ----------------------------------------------------------
+// A save is the whole game state serialized to a JSON file the player downloads.
+// Loading reads one back, mutates the (const) state object in place, revives its
+// Date fields, and refreshes every view. On the co-op host, a load re-broadcasts
+// to all joiners automatically via the normal state snapshot.
+function saveGame() {
+  if (typeof state === "undefined") return;
+  let snap;
+  try { snap = JSON.parse(JSON.stringify(state)); }
+  catch (e) { if (typeof logEvent === "function") logEvent("Save failed — state could not be serialized."); return; }
+  const payload = { __sc_save: 1, version: 1, savedAt: new Date().toISOString(), state: snap };
+  const d = (state.date instanceof Date) ? state.date : new Date();
+  const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.getElementById("saveDownloadAnchor") || document.createElement("a");
+  a.href = url;
+  a.download = `slovenia-command-${stamp}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  if (typeof logEvent === "function") logEvent("Game saved to " + a.download + ".");
+  if (typeof closePauseMenu === "function") closePauseMenu();
+}
+
+function parseSaveText(text) {
+  let obj;
+  try { obj = JSON.parse(text); } catch (e) { return null; }
+  if (obj && obj.__sc_save && obj.state) return obj.state; // wrapped save
+  if (obj && obj.econ && obj.date !== undefined) return obj; // bare state
+  return null;
+}
+
+function applyLoadedState(snap) {
+  if (!snap || typeof snap !== "object") return false;
+  for (const k in snap) state[k] = snap[k];
+  if (typeof snap.date === "string") state.date = new Date(snap.date);
+  (state.pendingDecisions || []).forEach(dd => { if (dd && typeof dd.deadlineDate === "string") dd.deadlineDate = new Date(dd.deadlineDate); });
+  (state.pendingOutcomes || []).forEach(o => { if (o && typeof o.resolveDate === "string") o.resolveDate = new Date(o.resolveDate); });
+  // Per-player fields never carry over from a save.
+  state.selectedUnitId = null;
+  state.selectedCityId = null;
+  state.selectedMunicipalityId = null;
+  state.pendingWaypoints = [];
+  return true;
+}
+
+function refreshAfterLoad() {
+  if (typeof invalidateStaticMapCache === "function") invalidateStaticMapCache();
+  if (typeof renderTopBar === "function") try { renderTopBar(); } catch (e) {}
+  if (typeof renderWarBanner === "function") try { renderWarBanner(); } catch (e) {}
+  if (typeof refreshSpeedButtons === "function") try { refreshSpeedButtons(); } catch (e) {}
+  if (typeof updateSelectedUnitBox === "function") try { updateSelectedUnitBox(); } catch (e) {}
+  if (typeof renderPendingTray === "function") try { renderPendingTray(); } catch (e) {}
+  if (typeof renderModifierBar === "function") try { renderModifierBar(); } catch (e) {}
+  if (typeof closeCityPanel === "function") try { closeCityPanel(); } catch (e) {}
+  if (typeof syncEnemyMarkers === "function") try { syncEnemyMarkers(); } catch (e) {}
+  if (typeof mapEngine !== "undefined" && mapEngine) mapEngine._scheduleRender();
+}
+
+// From the main menu (game not started yet) -> start singleplayer with the save.
+function loadGameFromMenu(text) {
+  const snap = parseSaveText(text);
+  if (!snap) { alert("That file isn't a valid Slovenia Command save."); return; }
+  if (typeof launchGame === "function") launchGame("single");
+  applyLoadedState(snap);
+  refreshAfterLoad();
+  if (typeof logEvent === "function") logEvent("Save loaded — resuming your campaign.");
+}
+
+// From the in-game pause menu. On the co-op host this rebroadcasts to everyone.
+function loadGameInGame(text) {
+  if (typeof mpRole !== "undefined" && mpRole === "client") { alert("Only the host can load a save in multiplayer."); return; }
+  const snap = parseSaveText(text);
+  if (!snap) { alert("That file isn't a valid Slovenia Command save."); return; }
+  applyLoadedState(snap);
+  refreshAfterLoad();
+  if (typeof closePauseMenu === "function") closePauseMenu();
+  if (typeof logEvent === "function") logEvent("Save loaded.");
+}
+
+function triggerLoadPicker(handler) {
+  const input = document.getElementById("loadFileInput");
+  if (!input) return;
+  input.value = "";
+  input.onchange = () => {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => handler(String(reader.result || ""));
+    reader.readAsText(file);
+  };
+  input.click();
 }
 
 function quitGame() {
