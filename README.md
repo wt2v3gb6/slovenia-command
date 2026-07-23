@@ -1,6 +1,6 @@
 # Slovenia Command
 
-A Rise-of-Nations-style strategy game where you take command of the Republic of Slovenia — economy, military, diplomacy, research and events on a live satellite map. Play solo or **co-op with friends** over the internet.
+A strategy game where you take command of the Republic of Slovenia — economy, military, diplomacy, research and events on a live satellite map. Play solo or **co-op with friends** over the internet.
 
 ## ▶ Download & play
 
@@ -8,7 +8,7 @@ A Rise-of-Nations-style strategy game where you take command of the Republic of 
 
 1. Open the link above and download `SloveniaCommand-Setup-*.exe` from the latest release.
 2. Run it. The game installs and launches automatically.
-3. That's it — the game **updates itself** every time a new version is released. No re-downloading.
+3. That's it — the game updates itself every time a new version is released. No re-downloading.
 
 > Windows may show a "Windows protected your PC" SmartScreen notice because the app isn't code-signed. Click **More info → Run anyway**.
 
@@ -18,12 +18,6 @@ Both players command the same Slovenia together.
 
 - **Host:** Main menu → *Multiplayer* → *Host a game*. Forward **TCP port 8934** on your router to your PC, then share the room code shown (also visible in the pause menu, `Esc`).
 - **Join:** Main menu → *Multiplayer* → *Join a game* → paste your friend's code.
-
-## Controls
-
-- **H** — halt all units (cancels every move order, units stop where they are)
-- **Esc** — pause menu / room code
-- **Space** — pause / resume
 
 ---
 
